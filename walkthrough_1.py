@@ -64,80 +64,87 @@ async def get_bedrock_browser():
                 await browser.close()
 
 # ---------------------------------------------------------------------------
-# Layer 2: Tools Specifically for Your React App
+# Layer 2: Tools with Proper Timing
 # ---------------------------------------------------------------------------
 @tool
 async def navigate_to_app() -> str:
     """Navigates to the configured React application URL."""
     page = get_page()
-    await page.goto(APP_URL, wait_until="load", timeout=30000)
-    await page.wait_for_timeout(1000)  # Give React time to render
-    return f"Navigated to {APP_URL}. Title: {await page.title()}"
+    try:
+        await page.goto(APP_URL, wait_until="domcontentloaded", timeout=30000)
+        # Wait for React to render
+        await page.wait_for_timeout(2000)
+        return f"✓ Navigated to {APP_URL}"
+    except Exception as e:
+        return f"✗ Navigation failed: {str(e)}"
 
 @tool
 async def login(username: str, password: str) -> str:
-    """Logs into the application with the given credentials.
-    
-    The login page has:
-    - First input (no name attribute) for username
-    - Second input with type='password' for password
-    - Submit button with type='submit'
-    """
+    """Logs into the application with the given credentials."""
     page = get_page()
     try:
-        # Wait for the login form to be visible
-        await page.wait_for_selector('form', timeout=5000)
+        # Wait for login form to be present
+        await page.wait_for_selector('form', timeout=10000, state="visible")
         
-        # Fill username - it's the first input in the form (no name attribute)
-        username_input = page.locator('form input').first
-        await username_input.fill(username)
+        # Fill username - first input in form
+        await page.locator('form input').first.fill(username, timeout=5000)
         
-        # Fill password - has type='password'
-        password_input = page.locator('input[type="password"]')
-        await password_input.fill(password)
+        # Fill password
+        await page.locator('input[type="password"]').fill(password, timeout=5000)
         
-        # Click the login button
-        await page.click('button[type="submit"]')
+        # Click login button
+        await page.click('button[type="submit"]', timeout=5000)
         
-        # Wait for navigation/form submission
+        # Wait for navigation to complete - look for the form page
+        await page.wait_for_selector('input[name="name"]', timeout=10000, state="visible")
+        
+        # Extra wait for React to stabilize
         await page.wait_for_timeout(1500)
         
-        return f"Successfully logged in as {username}"
+        return f"✓ Successfully logged in as '{username}'"
     except Exception as e:
-        return f"Login failed: {str(e)}"
+        return f"✗ Login failed: {str(e)}"
 
 @tool
 async def fill_and_submit_form(name: str, email: str, phone: str, address: str, message: str) -> str:
-    """Fills out and submits the form with all 5 fields.
-    
-    The form has these fields with name attributes:
-    - input[name="name"]
-    - input[name="email"]
-    - input[name="phone"]
-    - input[name="address"]
-    - textarea[name="message"]
-    """
+    """Fills out and submits ONE form entry. Wait for this to complete before calling again."""
     page = get_page()
     try:
-        # Wait for the form page to load
-        await page.wait_for_selector('input[name="name"]', timeout=5000)
+        # Make sure we're on the form page
+        await page.wait_for_selector('input[name="name"]', timeout=10000, state="visible")
+        await page.wait_for_timeout(500)
         
-        # Fill all form fields using their name attributes
-        await page.fill('input[name="name"]', name)
-        await page.fill('input[name="email"]', email)
-        await page.fill('input[name="phone"]', phone)
-        await page.fill('input[name="address"]', address)
-        await page.fill('textarea[name="message"]', message)
+        # Fill each field with individual waits
+        await page.fill('input[name="name"]', name, timeout=5000)
+        await page.wait_for_timeout(200)
         
-        # Click submit button
-        await page.click('button[type="submit"]')
+        await page.fill('input[name="email"]', email, timeout=5000)
+        await page.wait_for_timeout(200)
         
-        # Wait for the submission to process
+        await page.fill('input[name="phone"]', phone, timeout=5000)
+        await page.wait_for_timeout(200)
+        
+        await page.fill('input[name="address"]', address, timeout=5000)
+        await page.wait_for_timeout(200)
+        
+        await page.fill('textarea[name="message"]', message, timeout=5000)
+        await page.wait_for_timeout(200)
+        
+        # Click submit
+        await page.click('button[type="submit"]', timeout=5000)
+        
+        # Wait for form to clear (React will clear the inputs after submission)
         await page.wait_for_timeout(1000)
         
-        return f"Successfully submitted form for {name}"
+        # Verify the form cleared by checking if name field is empty
+        name_value = await page.input_value('input[name="name"]')
+        if name_value == "":
+            return f"✓ Successfully submitted form for '{name}' (form cleared)"
+        else:
+            return f"⚠ Submitted form for '{name}' but form may not have cleared"
+            
     except Exception as e:
-        return f"Form submission failed: {str(e)}"
+        return f"✗ Form submission failed for '{name}': {str(e)}"
 
 @tool
 async def get_page_content() -> str:
@@ -146,43 +153,48 @@ async def get_page_content() -> str:
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=5000)
         body_text = await page.inner_text("body", timeout=5000)
+        # Truncate if too long
+        if len(body_text) > 500:
+            return body_text[:500] + "... (truncated)"
         return body_text
     except Exception as e:
-        return f"Error retrieving page content: {str(e)}"
+        return f"✗ Error retrieving page content: {str(e)}"
 
 @tool
 async def get_submission_count() -> str:
     """Returns the number of submissions shown in the table."""
     page = get_page()
     try:
-        # Look for the submissions table
+        # Wait a moment for the page to render
+        await page.wait_for_timeout(1000)
+        
+        # Count table rows
         rows = await page.locator('table tbody tr').count()
-        return f"Found {rows} submissions in the table"
+        return f"✓ Found {rows} submission(s) in the table"
     except Exception as e:
-        return f"Could not count submissions: {str(e)}"
+        return f"✗ Could not count submissions: {str(e)}"
 
 @tool
 async def click_view_submissions() -> str:
     """Clicks the 'View Submissions' button to see all submitted data."""
     page = get_page()
     try:
-        # The button text contains "View Submissions"
-        await page.click('button:has-text("View Submissions")')
-        await page.wait_for_timeout(500)
-        return "Navigated to View Submissions page"
+        await page.click('button:has-text("View Submissions")', timeout=5000)
+        await page.wait_for_timeout(1000)
+        return "✓ Navigated to View Submissions page"
     except Exception as e:
-        return f"Failed to click View Submissions: {str(e)}"
+        return f"✗ Failed to click View Submissions: {str(e)}"
 
 @tool
 async def click_submit_form() -> str:
     """Clicks the 'Submit Form' button to go back to the form page."""
     page = get_page()
     try:
-        await page.click('button:has-text("Submit Form")')
-        await page.wait_for_timeout(500)
-        return "Navigated to Submit Form page"
+        await page.click('button:has-text("Submit Form")', timeout=5000)
+        await page.wait_for_timeout(1000)
+        return "✓ Navigated back to Submit Form page"
     except Exception as e:
-        return f"Failed to click Submit Form: {str(e)}"
+        return f"✗ Failed to click Submit Form: {str(e)}"
 
 # ---------------------------------------------------------------------------
 # Layer 3: LangGraph Implementation
@@ -211,37 +223,49 @@ def create_automation_agent():
     async def call_model(state):
         sys_msg = SystemMessage(content="""You are a browser automation agent for a React form application.
 
-Your tools are specifically designed for this app:
-1. navigate_to_app() - Goes to the app URL
-2. login(username, password) - Logs in (use "admin", "admin")
-3. fill_and_submit_form(name, email, phone, address, message) - Fills and submits one complete form entry
-4. get_page_content() - Gets current page text
-5. get_submission_count() - Counts rows in the submissions table
-6. click_view_submissions() - Switches to the view submissions page
-7. click_submit_form() - Switches back to the form page
+CRITICAL RULES FOR FORM SUBMISSION:
+1. You MUST call fill_and_submit_form() ONE AT A TIME for each entry
+2. You MUST wait for each submission to complete before starting the next one
+3. NEVER call fill_and_submit_form() multiple times in parallel - this causes DOM detachment errors
+4. After each fill_and_submit_form() call, the tool will tell you if it succeeded
 
-WORKFLOW:
-1. Navigate to the app
-2. Log in with provided credentials
-3. After login, you'll be on the "Submit Form" page
-4. For each form entry in the data:
-   - Call fill_and_submit_form() with all 5 fields at once
-   - After each submission, the form clears automatically
-5. After all submissions, click_view_submissions() to see the full table
-6. Use get_submission_count() to verify all entries were saved
-7. Report the final count
+CORRECT WORKFLOW:
+Step 1: navigate_to_app()
+Step 2: login("admin", "admin")  
+Step 3: fill_and_submit_form() for Entry 1 → WAIT for success
+Step 4: fill_and_submit_form() for Entry 2 → WAIT for success
+Step 5: fill_and_submit_form() for Entry 3 → WAIT for success
+... (repeat for all entries, ONE AT A TIME)
+Step N: click_view_submissions()
+Step N+1: get_submission_count()
 
-IMPORTANT:
-- Use fill_and_submit_form() to submit each entry - it handles all 5 fields at once
-- Don't try to fill individual fields - the tool does it all in one call
-- The app stores data in localStorage, so all submissions persist""")
+WRONG APPROACH (DO NOT DO THIS):
+❌ Calling fill_and_submit_form() multiple times in one response
+❌ Example: [fill_and_submit_form(entry1), fill_and_submit_form(entry2)]
+❌ This causes elements to detach from the DOM
+
+Your tools:
+- navigate_to_app() - Goes to the app URL
+- login(username, password) - Logs in (use "admin", "admin")
+- fill_and_submit_form(name, email, phone, address, message) - Submits ONE entry at a time
+- get_page_content() - Gets current page text
+- get_submission_count() - Counts rows in table
+- click_view_submissions() - Switches to view page
+- click_submit_form() - Switches back to form page
+
+Remember: Process entries SEQUENTIALLY, not in parallel!""")
         
         messages = [sys_msg] + state["messages"]
         response = await llm.bind_tools(tools).ainvoke(messages)
-        print(f"\n=== Agent Response ===")
-        print(f"Content: {response.content if hasattr(response, 'content') else response}")
-        if hasattr(response, 'tool_calls'):
-            print(f"Tool calls: {response.tool_calls}")
+        
+        # Print what the agent is doing
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            print(f"\n📋 Agent calling {len(response.tool_calls)} tool(s):")
+            for tc in response.tool_calls:
+                args_str = ', '.join(f"{k}={v[:30] if isinstance(v, str) else v}" 
+                                   for k, v in tc.get('args', {}).items())
+                print(f"   → {tc.get('name')}({args_str})")
+        
         return {"messages": [response]}
         
     workflow.add_node("agent", call_model)
@@ -269,45 +293,51 @@ async def run_agent():
         print(f"Error: {FORM_DATA_FILE} not found. Create it with a JSON list of entries.")
         return
 
-    print(f"Loaded {len(form_data)} form entries to submit")
+    print(f"📊 Loaded {len(form_data)} form entries to submit\n")
     graph = create_automation_agent()
 
     async with get_bedrock_browser() as page:
         set_page(page)
-        print(f"Connected to Bedrock Browser (AgentCore)\n")
+        print(f"🌐 Connected to Bedrock Browser\n")
+        print("="*70)
 
-        # Create a detailed task description
-        entries_text = "\n".join([
-            f"Entry {i+1}: name={e.get('name')}, email={e.get('email')}, phone={e.get('phone')}, address={e.get('address')}, message={e.get('message')}"
-            for i, e in enumerate(form_data)
-        ])
+        # Create individual task for each entry to emphasize sequential processing
+        entries_list = []
+        for i, entry in enumerate(form_data, 1):
+            entries_list.append(
+                f"Entry {i}: name='{entry['name']}', email='{entry['email']}', "
+                f"phone='{entry['phone']}', address='{entry['address']}', "
+                f"message='{entry['message'][:50]}...'"
+            )
 
-        user_message = f"""Please automate this workflow:
+        user_message = f"""Please complete this workflow step-by-step:
 
 1. Navigate to the application
 2. Log in with username="admin" and password="admin"
-3. Submit these {len(form_data)} form entries (one at a time):
+3. Submit these {len(form_data)} form entries ONE AT A TIME (wait for each to complete):
 
-{entries_text}
+{chr(10).join(entries_list)}
 
-4. After submitting all entries, view the submissions table
-5. Count and report how many submissions are in the table
-6. Confirm that all {len(form_data)} entries were successfully saved"""
+4. After ALL entries are submitted, click "View Submissions"
+5. Get the submission count and verify all {len(form_data)} entries are there
+6. Report the final count
 
-        print("Starting agent execution...\n")
+IMPORTANT: Submit forms SEQUENTIALLY - wait for each submission to complete before starting the next one!"""
+
+        print("🤖 Starting automation...\n")
         result = await graph.ainvoke({"messages": [("user", user_message)]})
 
-        print("\n" + "="*60)
-        print("FINAL RESPONSE")
-        print("="*60)
+        print("\n" + "="*70)
+        print("✅ AUTOMATION COMPLETE")
+        print("="*70)
         final_message = result["messages"][-1]
         print(final_message.content if hasattr(final_message, 'content') else str(final_message))
-        print("="*60)
+        print("="*70 + "\n")
         
         # Take a final screenshot
         await page.wait_for_timeout(1000)
         await page.screenshot(path="final_result.png", full_page=True)
-        print("\nFinal screenshot saved to final_result.png")
+        print("📸 Screenshot saved to final_result.png")
 
 if __name__ == "__main__":
     asyncio.run(run_agent())
