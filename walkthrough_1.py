@@ -22,8 +22,7 @@ load_dotenv()
 FORM_DATA_FILE = "form_data.json"
 APP_URL = os.environ.get("APP_URL", "https://your-public-ngrok-url.ngrok-free.app")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
-BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
-MODEL_ID = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")    
 
 _page_holder: dict[str, Page | None] = {"page": None}
 
@@ -304,7 +303,7 @@ IMPORTANT: Submit forms SEQUENTIALLY - wait for each submission to complete befo
         
         await page.wait_for_timeout(1000)
         await page.screenshot(path="final_result.png", full_page=True)
-        print("📸 Screenshot saved to final_result.png")
+        print("Screenshot saved to final_result.png")
 
 if __name__ == "__main__":
     asyncio.run(run_agent())

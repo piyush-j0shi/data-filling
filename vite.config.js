@@ -5,10 +5,9 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // This allows the ngrok URL to communicate with your local Vite server
-    allowedHosts: [
-      '.ngrok-free.app', // Permits all ngrok subdomains
-      '.ngrok-free.dev'  // Permits ngrok's alternative dev TLD
-    ]
+    allowedHosts: ['.ngrok-free.app', '.ngrok-free.dev'],
+    proxy: {
+      '/api': 'http://localhost:8000'
+    }
   }
 })

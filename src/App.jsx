@@ -1,32 +1,16 @@
 import { useState } from 'react'
 
-function getSubmissionsStorageKey(username, password) {
-  // Simple (not secure) keying so same credentials reload same data.
-  // If you need real security, you must use a backend.
-  const raw = `${username}\0${password}`
-  const encoded = typeof btoa === 'function' ? btoa(raw) : raw
-  return `submissions:${encoded}`
+async function fetchSubmissions(username) {
+  const res = await fetch(`/api/submissions?username=${encodeURIComponent(username)}`)
+  return res.ok ? await res.json() : []
 }
 
-function loadSubmissions(username, password) {
-  try {
-    const key = getSubmissionsStorageKey(username, password)
-    const raw = localStorage.getItem(key)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
-function saveSubmissions(username, password, submissions) {
-  try {
-    const key = getSubmissionsStorageKey(username, password)
-    localStorage.setItem(key, JSON.stringify(submissions))
-  } catch {
-    // ignore storage errors (quota, blocked, etc.)
-  }
+async function postSubmission(username, data) {
+  await fetch('/api/submissions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, ...data }),
+  })
 }
 
 function LoginPage({ onLogin, error }) {
@@ -198,16 +182,16 @@ function App() {
   const [loginError, setLoginError] = useState('')
   const [submissions, setSubmissions] = useState([])
   const [currentPage, setCurrentPage] = useState('form')
-  const [auth, setAuth] = useState({ username: '', password: '' })
+  const [username, setUsername] = useState('')
 
-  const handleLogin = (username, password) => {
-    if (!username || !password) {
+  const handleLogin = async (user, password) => {
+    if (!user || !password) {
       setLoginError('Username and password are required')
       return
     }
 
-    setAuth({ username, password })
-    setSubmissions(loadSubmissions(username, password))
+    setUsername(user)
+    setSubmissions(await fetchSubmissions(user))
     setLoggedIn(true)
     setLoginError('')
   }
@@ -215,14 +199,13 @@ function App() {
   const handleLogout = () => {
     setLoggedIn(false)
     setCurrentPage('form')
-    setAuth({ username: '', password: '' })
+    setUsername('')
     setSubmissions([])
   }
 
-  const handleFormSubmit = (formData) => {
-    const next = [...submissions, formData]
-    setSubmissions(next)
-    saveSubmissions(auth.username, auth.password, next)
+  const handleFormSubmit = async (formData) => {
+    await postSubmission(username, formData)
+    setSubmissions([...submissions, formData])
   }
 
   if (!loggedIn) {
