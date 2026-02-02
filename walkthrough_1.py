@@ -1,11 +1,12 @@
 import asyncio
 import json
 import os
+
 from typing import Annotated, Sequence
 from typing_extensions import TypedDict
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-import boto3
+
 import nest_asyncio
 from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_core.tools import tool
@@ -14,13 +15,10 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from playwright.async_api import async_playwright, Page
-
 from bedrock_agentcore.tools.browser_client import browser_session
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 load_dotenv()
+
 FORM_DATA_FILE = "form_data.json"
 APP_URL = os.environ.get("APP_URL", "https://your-public-ngrok-url.ngrok-free.app")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
@@ -37,9 +35,6 @@ def get_page() -> Page:
         raise RuntimeError("Browser session not active. Call set_page first.")
     return _page_holder["page"]
 
-# ---------------------------------------------------------------------------
-# Layer 1: AgentCore Browser Connection with Custom Headers
-# ---------------------------------------------------------------------------
 @asynccontextmanager
 async def get_bedrock_browser():
     """Starts an AWS Bedrock browser session and connects via CDP with custom headers."""
@@ -50,7 +45,6 @@ async def get_bedrock_browser():
             browser = await pw.chromium.connect_over_cdp(ws_url, headers=headers)
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
             
-            # Set custom headers to bypass ngrok warning
             await context.set_extra_http_headers({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "ngrok-skip-browser-warning": "true"
@@ -63,45 +57,31 @@ async def get_bedrock_browser():
                 await page.close()
                 await browser.close()
 
-# ---------------------------------------------------------------------------
-# Layer 2: Tools with Proper Timing
-# ---------------------------------------------------------------------------
 @tool
 async def navigate_to_app() -> str:
     """Navigates to the configured React application URL."""
     page = get_page()
     try:
         await page.goto(APP_URL, wait_until="domcontentloaded", timeout=30000)
-        # Wait for React to render
         await page.wait_for_timeout(2000)
-        return f"✓ Navigated to {APP_URL}"
+        return f"Navigated to {APP_URL}"
+    
     except Exception as e:
-        return f"✗ Navigation failed: {str(e)}"
+        return f"Navigation failed: {str(e)}"
 
 @tool
 async def login(username: str, password: str) -> str:
     """Logs into the application with the given credentials."""
     page = get_page()
     try:
-        # Wait for login form to be present
         await page.wait_for_selector('form', timeout=10000, state="visible")
-        
-        # Fill username - first input in form
         await page.locator('form input').first.fill(username, timeout=5000)
-        
-        # Fill password
         await page.locator('input[type="password"]').fill(password, timeout=5000)
-        
-        # Click login button
         await page.click('button[type="submit"]', timeout=5000)
-        
-        # Wait for navigation to complete - look for the form page
         await page.wait_for_selector('input[name="name"]', timeout=10000, state="visible")
-        
-        # Extra wait for React to stabilize
         await page.wait_for_timeout(1500)
-        
-        return f"✓ Successfully logged in as '{username}'"
+        return f"Successfully logged in as '{username}'"
+    
     except Exception as e:
         return f"✗ Login failed: {str(e)}"
 
@@ -110,11 +90,9 @@ async def fill_and_submit_form(name: str, email: str, phone: str, address: str, 
     """Fills out and submits ONE form entry. Wait for this to complete before calling again."""
     page = get_page()
     try:
-        # Make sure we're on the form page
         await page.wait_for_selector('input[name="name"]', timeout=10000, state="visible")
         await page.wait_for_timeout(500)
         
-        # Fill each field with individual waits
         await page.fill('input[name="name"]', name, timeout=5000)
         await page.wait_for_timeout(200)
         
@@ -130,21 +108,18 @@ async def fill_and_submit_form(name: str, email: str, phone: str, address: str, 
         await page.fill('textarea[name="message"]', message, timeout=5000)
         await page.wait_for_timeout(200)
         
-        # Click submit
         await page.click('button[type="submit"]', timeout=5000)
-        
-        # Wait for form to clear (React will clear the inputs after submission)
         await page.wait_for_timeout(1000)
         
-        # Verify the form cleared by checking if name field is empty
         name_value = await page.input_value('input[name="name"]')
+        
         if name_value == "":
-            return f"✓ Successfully submitted form for '{name}' (form cleared)"
+            return f"Successfully submitted form for '{name}' (form cleared)"
         else:
-            return f"⚠ Submitted form for '{name}' but form may not have cleared"
+            return f"Submitted form for '{name}' but form may not have cleared"
             
     except Exception as e:
-        return f"✗ Form submission failed for '{name}': {str(e)}"
+        return f"Form submission failed for '{name}': {str(e)}"
 
 @tool
 async def get_page_content() -> str:
@@ -153,10 +128,11 @@ async def get_page_content() -> str:
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=5000)
         body_text = await page.inner_text("body", timeout=5000)
-        # Truncate if too long
+        
         if len(body_text) > 500:
             return body_text[:500] + "... (truncated)"
         return body_text
+    
     except Exception as e:
         return f"✗ Error retrieving page content: {str(e)}"
 
@@ -165,14 +141,12 @@ async def get_submission_count() -> str:
     """Returns the number of submissions shown in the table."""
     page = get_page()
     try:
-        # Wait a moment for the page to render
         await page.wait_for_timeout(1000)
-        
-        # Count table rows
         rows = await page.locator('table tbody tr').count()
-        return f"✓ Found {rows} submission(s) in the table"
+        return f"Found {rows} submission(s) in the table"
+    
     except Exception as e:
-        return f"✗ Could not count submissions: {str(e)}"
+        return f"Could not count submissions: {str(e)}"
 
 @tool
 async def click_view_submissions() -> str:
@@ -182,6 +156,7 @@ async def click_view_submissions() -> str:
         await page.click('button:has-text("View Submissions")', timeout=5000)
         await page.wait_for_timeout(1000)
         return "✓ Navigated to View Submissions page"
+    
     except Exception as e:
         return f"✗ Failed to click View Submissions: {str(e)}"
 
@@ -192,13 +167,11 @@ async def click_submit_form() -> str:
     try:
         await page.click('button:has-text("Submit Form")', timeout=5000)
         await page.wait_for_timeout(1000)
-        return "✓ Navigated back to Submit Form page"
+        return "Navigated back to Submit Form page"
+    
     except Exception as e:
-        return f"✗ Failed to click Submit Form: {str(e)}"
+        return f"Failed to click Submit Form: {str(e)}"
 
-# ---------------------------------------------------------------------------
-# Layer 3: LangGraph Implementation
-# ---------------------------------------------------------------------------
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
@@ -240,9 +213,9 @@ Step N: click_view_submissions()
 Step N+1: get_submission_count()
 
 WRONG APPROACH (DO NOT DO THIS):
-❌ Calling fill_and_submit_form() multiple times in one response
-❌ Example: [fill_and_submit_form(entry1), fill_and_submit_form(entry2)]
-❌ This causes elements to detach from the DOM
+Calling fill_and_submit_form() multiple times in one response
+Example: [fill_and_submit_form(entry1), fill_and_submit_form(entry2)]
+This causes elements to detach from the DOM
 
 Your tools:
 - navigate_to_app() - Goes to the app URL
@@ -258,13 +231,12 @@ Remember: Process entries SEQUENTIALLY, not in parallel!""")
         messages = [sys_msg] + state["messages"]
         response = await llm.bind_tools(tools).ainvoke(messages)
         
-        # Print what the agent is doing
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            print(f"\n📋 Agent calling {len(response.tool_calls)} tool(s):")
+            print(f"\nAgent calling {len(response.tool_calls)} tool(s):")
             for tc in response.tool_calls:
                 args_str = ', '.join(f"{k}={v[:30] if isinstance(v, str) else v}" 
                                    for k, v in tc.get('args', {}).items())
-                print(f"   → {tc.get('name')}({args_str})")
+                print(f"   - {tc.get('name')}({args_str})")
         
         return {"messages": [response]}
         
@@ -277,9 +249,6 @@ Remember: Process entries SEQUENTIALLY, not in parallel!""")
     
     return workflow.compile()
 
-# ---------------------------------------------------------------------------
-# Execution
-# ---------------------------------------------------------------------------
 def load_form_data(filepath: str) -> list[dict]:
     with open(filepath, "r") as f:
         return json.load(f)
@@ -293,15 +262,14 @@ async def run_agent():
         print(f"Error: {FORM_DATA_FILE} not found. Create it with a JSON list of entries.")
         return
 
-    print(f"📊 Loaded {len(form_data)} form entries to submit\n")
+    print(f"Loaded {len(form_data)} form entries to submit\n")
     graph = create_automation_agent()
 
     async with get_bedrock_browser() as page:
         set_page(page)
-        print(f"🌐 Connected to Bedrock Browser\n")
+        print(f"Connected to Bedrock Browser\n")
         print("="*70)
 
-        # Create individual task for each entry to emphasize sequential processing
         entries_list = []
         for i, entry in enumerate(form_data, 1):
             entries_list.append(
@@ -324,17 +292,16 @@ async def run_agent():
 
 IMPORTANT: Submit forms SEQUENTIALLY - wait for each submission to complete before starting the next one!"""
 
-        print("🤖 Starting automation...\n")
+        print("Starting automation...\n")
         result = await graph.ainvoke({"messages": [("user", user_message)]})
 
         print("\n" + "="*70)
-        print("✅ AUTOMATION COMPLETE")
+        print("AUTOMATION COMPLETE")
         print("="*70)
         final_message = result["messages"][-1]
         print(final_message.content if hasattr(final_message, 'content') else str(final_message))
         print("="*70 + "\n")
         
-        # Take a final screenshot
         await page.wait_for_timeout(1000)
         await page.screenshot(path="final_result.png", full_page=True)
         print("📸 Screenshot saved to final_result.png")
