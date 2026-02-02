@@ -293,8 +293,6 @@ IMPORTANT: Submit forms SEQUENTIALLY - wait for each submission to complete befo
 
         result = await graph.ainvoke({"messages": [("user", user_message)]})
 
-        print("\n" + "="*70)
-        print("AUTOMATION COMPLETE")
         print("="*70)
         final_message = result["messages"][-1]
         print(final_message.content if hasattr(final_message, 'content') else str(final_message))
