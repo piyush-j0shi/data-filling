@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Alice Johnson",
+    "email": "alice@example.com",
+    "phone": "555-0101",
+    "address": "123 Main St, Springfield",
+    "message": "Hello, this is a test submission from the automated agent."
+  },
+  {
+    "name": "Bob Smith",
+    "email": "bob.smith@example.com",
+    "phone": "555-0202",
+    "address": "456 Oak Ave, Portland",
+    "message": "Second form entry for verification purposes."
+  }
+]
