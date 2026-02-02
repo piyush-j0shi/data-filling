@@ -37,7 +37,7 @@ def get_page() -> Page:
 @asynccontextmanager
 async def get_bedrock_browser():
     """Starts an AWS Bedrock browser session and connects via CDP with custom headers."""
-    with browser_session(AWS_REGION) as client:
+    with browser_session(AWS_REGION, identifier = BROWSER_ID) as client:
         ws_url, headers = client.generate_ws_headers()
         
         async with async_playwright() as pw:
