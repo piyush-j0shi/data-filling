@@ -1,16 +1,32 @@
 import { useState } from 'react'
 
+const API_HEADERS = {
+  'Content-Type': 'application/json',
+  'ngrok-skip-browser-warning': 'true',
+}
+
 async function fetchSubmissions(username) {
-  const res = await fetch(`/api/submissions?username=${encodeURIComponent(username)}`)
-  return res.ok ? await res.json() : []
+  try {
+    const res = await fetch(
+      `/api/submissions?username=${encodeURIComponent(username)}`,
+      { headers: API_HEADERS }
+    )
+    return res.ok ? await res.json() : []
+  } catch {
+    return []
+  }
 }
 
 async function postSubmission(username, data) {
-  await fetch('/api/submissions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, ...data }),
-  })
+  try {
+    await fetch('/api/submissions', {
+      method: 'POST',
+      headers: API_HEADERS,
+      body: JSON.stringify({ username, ...data }),
+    })
+  } catch {
+    // network error — submission still updates local state
+  }
 }
 
 function LoginPage({ onLogin, error }) {
@@ -204,8 +220,8 @@ function App() {
   }
 
   const handleFormSubmit = async (formData) => {
-    await postSubmission(username, formData)
     setSubmissions([...submissions, formData])
+    postSubmission(username, formData)
   }
 
   if (!loggedIn) {
