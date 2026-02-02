@@ -133,7 +133,7 @@ async def get_page_content() -> str:
         return body_text
     
     except Exception as e:
-        return f"✗ Error retrieving page content: {str(e)}"
+        return f"Error retrieving page content: {str(e)}"
 
 @tool
 async def get_submission_count() -> str:
@@ -154,10 +154,10 @@ async def click_view_submissions() -> str:
     try:
         await page.click('button:has-text("View Submissions")', timeout=5000)
         await page.wait_for_timeout(1000)
-        return "✓ Navigated to View Submissions page"
+        return " Navigated to View Submissions page"
     
     except Exception as e:
-        return f"✗ Failed to click View Submissions: {str(e)}"
+        return f"Failed to click View Submissions: {str(e)}"
 
 @tool
 async def click_submit_form() -> str:
@@ -231,7 +231,7 @@ Remember: Process entries SEQUENTIALLY, not in parallel!""")
         response = await llm.bind_tools(tools).ainvoke(messages)
         
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            print(f"\nAgent calling {len(response.tool_calls)} tool(s):")
+            print(f"\ntool calling {len(response.tool_calls)} tool(s):")
             for tc in response.tool_calls:
                 args_str = ', '.join(f"{k}={v[:30] if isinstance(v, str) else v}" 
                                    for k, v in tc.get('args', {}).items())
@@ -291,7 +291,6 @@ async def run_agent():
 
 IMPORTANT: Submit forms SEQUENTIALLY - wait for each submission to complete before starting the next one!"""
 
-        print("Starting automation...\n")
         result = await graph.ainvoke({"messages": [("user", user_message)]})
 
         print("\n" + "="*70)
