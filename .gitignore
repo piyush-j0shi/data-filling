@@ -42,3 +42,4 @@ env/
 ## Jupyter (optional)
 .ipynb_checkpoints/
 
+node_modules
