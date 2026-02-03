@@ -158,7 +158,7 @@ function LiveFormDataTable({ formData }) {
   )
 }
 
-function FormPage({ submissions, onSubmit }) {
+function FormPage({ onSubmit }) {
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -181,7 +181,7 @@ function FormPage({ submissions, onSubmit }) {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Submit a Form</CardTitle>
+          <CardTitle>New Entry</CardTitle>
           <CardDescription>Fill out the fields below and submit.</CardDescription>
         </CardHeader>
         <CardContent>
@@ -221,20 +221,6 @@ function FormPage({ submissions, onSubmit }) {
           <LiveFormDataTable formData={formData} />
         </CardContent>
       </Card>
-
-      {submissions.length > 0 && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <CardTitle className="text-base">Submitted Data</CardTitle>
-              <Badge variant="secondary">{submissions.length}</Badge>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <SubmissionsTable submissions={submissions} />
-          </CardContent>
-        </Card>
-      )}
     </div>
   )
 }
@@ -345,16 +331,16 @@ function App() {
 
         <Tabs defaultValue="form">
           <TabsList className="w-full">
-            <TabsTrigger value="form" className="flex-1">Submit Form</TabsTrigger>
+            <TabsTrigger value="form" className="flex-1">New Entry</TabsTrigger>
             <TabsTrigger value="view" className="flex-1">
-              View Submissions
+              Submissions
               {submissions.length > 0 && (
                 <Badge variant="secondary" className="ml-2">{submissions.length}</Badge>
               )}
             </TabsTrigger>
           </TabsList>
           <TabsContent value="form">
-            <FormPage submissions={submissions} onSubmit={handleFormSubmit} />
+            <FormPage onSubmit={handleFormSubmit} />
           </TabsContent>
           <TabsContent value="view">
             <ViewSubmissions submissions={submissions} />
