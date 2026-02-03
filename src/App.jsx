@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 
 const API_HEADERS = {
   'Content-Type': 'application/json',
@@ -90,7 +91,58 @@ function LoginPage({ onLogin, error }) {
   )
 }
 
+function SubmissionDetail({ submission, index, open, onOpenChange }) {
+  if (!submission) return null
+
+  const fields = [
+    { label: 'Name', value: submission.name, icon: <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> },
+    { label: 'Email', value: submission.email, icon: <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg> },
+    { label: 'Phone', value: submission.phone, icon: <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> },
+    { label: 'Address', value: submission.address, icon: <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg> },
+  ]
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+              {index}
+            </span>
+            {submission.name}
+          </DialogTitle>
+          <DialogDescription>Submission details</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 pt-2">
+          {fields.map((field) => (
+            <div key={field.label} className="flex items-start gap-3 rounded-lg border bg-muted/40 p-3">
+              <div className="mt-0.5 text-muted-foreground shrink-0">
+                {field.icon}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-muted-foreground">{field.label}</p>
+                <p className="text-sm mt-0.5 break-words">{field.value}</p>
+              </div>
+            </div>
+          ))}
+
+          <div className="rounded-lg border bg-muted/40 p-3">
+            <div className="flex items-center gap-2 mb-1.5">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              <p className="text-xs font-medium text-muted-foreground">Message</p>
+            </div>
+            <p className="text-sm whitespace-pre-wrap break-words">{submission.message}</p>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function SubmissionsTable({ submissions }) {
+  const [selected, setSelected] = useState(null)
+
   if (submissions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -104,32 +156,45 @@ function SubmissionsTable({ submissions }) {
   }
 
   return (
-    <div className="rounded-md border">
-      <Table>
-        <TableHeader>
-          <TableRow className="bg-muted/50 hover:bg-muted/50">
-            <TableHead className="w-12 text-center">#</TableHead>
-            <TableHead>Name</TableHead>
-            <TableHead>Email</TableHead>
-            <TableHead>Phone</TableHead>
-            <TableHead>Address</TableHead>
-            <TableHead>Message</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {submissions.map((s, i) => (
-            <TableRow key={i} className="even:bg-muted/30">
-              <TableCell className="text-center text-muted-foreground tabular-nums">{i + 1}</TableCell>
-              <TableCell className="font-medium">{s.name}</TableCell>
-              <TableCell>{s.email}</TableCell>
-              <TableCell className="tabular-nums">{s.phone}</TableCell>
-              <TableCell>{s.address}</TableCell>
-              <TableCell className="max-w-[200px] truncate">{s.message}</TableCell>
+    <>
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/50 hover:bg-muted/50">
+              <TableHead className="w-12 text-center">#</TableHead>
+              <TableHead>Name</TableHead>
+              <TableHead>Email</TableHead>
+              <TableHead>Phone</TableHead>
+              <TableHead>Address</TableHead>
+              <TableHead>Message</TableHead>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
+          </TableHeader>
+          <TableBody>
+            {submissions.map((s, i) => (
+              <TableRow
+                key={i}
+                className="even:bg-muted/30 cursor-pointer"
+                onClick={() => setSelected(i)}
+              >
+                <TableCell className="text-center text-muted-foreground tabular-nums">{i + 1}</TableCell>
+                <TableCell className="font-medium">{s.name}</TableCell>
+                <TableCell>{s.email}</TableCell>
+                <TableCell className="tabular-nums">{s.phone}</TableCell>
+                <TableCell>{s.address}</TableCell>
+                <TableCell className="max-w-[200px] truncate">{s.message}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      <SubmissionDetail
+        submission={selected !== null ? submissions[selected] : null}
+        index={selected !== null ? selected + 1 : 0}
+        open={selected !== null}
+        onOpenChange={(open) => { if (!open) setSelected(null) }}
+      />
+    </>
   )
 }
 
