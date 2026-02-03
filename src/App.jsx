@@ -1,4 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Badge } from '@/components/ui/badge'
 
 const API_HEADERS = {
   'Content-Type': 'application/json',
@@ -39,88 +47,114 @@ function LoginPage({ onLogin, error }) {
   }
 
   return (
-    <div style={{ maxWidth: 300, margin: '100px auto' }}>
-      <h2>Login</h2>
-      {error && <p style={{ color: 'red' }}>{error}</p>}
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: 10 }}>
-          <label>Username</label><br />
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-          />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label>Password</label><br />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </div>
-        <button type="submit">Login</button>
-      </form>
+    <div className="min-h-screen flex items-center justify-center p-4 relative">
+      <div className="absolute top-4 right-4">
+        <DarkModeToggle />
+      </div>
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center">
+          <CardTitle className="text-2xl">Login</CardTitle>
+          <CardDescription>Enter your credentials to continue</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {error && (
+            <p className="text-sm text-destructive mb-4">{error}</p>
+          )}
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="username">Username</Label>
+              <Input
+                id="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            <Button type="submit" className="w-full">
+              Login
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   )
 }
 
 function SubmissionsTable({ submissions }) {
   if (submissions.length === 0) {
-    return <p>No submissions yet.</p>
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-center">
+        <div className="rounded-full bg-muted p-3 mb-3">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </div>
+        <p className="text-sm font-medium text-muted-foreground">No submissions yet</p>
+        <p className="text-xs text-muted-foreground/70 mt-1">Submissions will appear here once added.</p>
+      </div>
+    )
   }
 
   return (
-    <table border="1" cellPadding="5" style={{ width: '100%', borderCollapse: 'collapse' }}>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Name</th>
-          <th>Email</th>
-          <th>Phone</th>
-          <th>Address</th>
-          <th>Message</th>
-        </tr>
-      </thead>
-      <tbody>
-        {submissions.map((s, i) => (
-          <tr key={i}>
-            <td>{i + 1}</td>
-            <td>{s.name}</td>
-            <td>{s.email}</td>
-            <td>{s.phone}</td>
-            <td>{s.address}</td>
-            <td>{s.message}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="rounded-md border">
+      <Table>
+        <TableHeader>
+          <TableRow className="bg-muted/50 hover:bg-muted/50">
+            <TableHead className="w-12 text-center">#</TableHead>
+            <TableHead>Name</TableHead>
+            <TableHead>Email</TableHead>
+            <TableHead>Phone</TableHead>
+            <TableHead>Address</TableHead>
+            <TableHead>Message</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {submissions.map((s, i) => (
+            <TableRow key={i} className="even:bg-muted/30">
+              <TableCell className="text-center text-muted-foreground tabular-nums">{i + 1}</TableCell>
+              <TableCell className="font-medium">{s.name}</TableCell>
+              <TableCell>{s.email}</TableCell>
+              <TableCell className="tabular-nums">{s.phone}</TableCell>
+              <TableCell>{s.address}</TableCell>
+              <TableCell className="max-w-[200px] truncate">{s.message}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   )
 }
 
 function LiveFormDataTable({ formData }) {
   return (
-    <table border="1" cellPadding="5" style={{ width: '100%', borderCollapse: 'collapse' }}>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Email</th>
-          <th>Phone</th>
-          <th>Address</th>
-          <th>Message</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>{formData.name}</td>
-          <td>{formData.email}</td>
-          <td>{formData.phone}</td>
-          <td>{formData.address}</td>
-          <td>{formData.message}</td>
-        </tr>
-      </tbody>
-    </table>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Name</TableHead>
+          <TableHead>Email</TableHead>
+          <TableHead>Phone</TableHead>
+          <TableHead>Address</TableHead>
+          <TableHead>Message</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        <TableRow>
+          <TableCell>{formData.name}</TableCell>
+          <TableCell>{formData.email}</TableCell>
+          <TableCell>{formData.phone}</TableCell>
+          <TableCell>{formData.address}</TableCell>
+          <TableCell>{formData.message}</TableCell>
+        </TableRow>
+      </TableBody>
+    </Table>
   )
 }
 
@@ -144,52 +178,120 @@ function FormPage({ submissions, onSubmit }) {
   }
 
   return (
-    <>
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: 10 }}>
-          <label>Name</label><br />
-          <input name="name" value={formData.name} onChange={handleChange} required />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label>Email</label><br />
-          <input name="email" type="email" value={formData.email} onChange={handleChange} required />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label>Phone</label><br />
-          <input name="phone" value={formData.phone} onChange={handleChange} required />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label>Address</label><br />
-          <input name="address" value={formData.address} onChange={handleChange} required />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label>Message</label><br />
-          <textarea name="message" value={formData.message} onChange={handleChange} required />
-        </div>
-        <button type="submit">Submit</button>
-      </form>
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Submit a Form</CardTitle>
+          <CardDescription>Fill out the fields below and submit.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="name">Name</Label>
+                <Input id="name" name="name" value={formData.name} onChange={handleChange} required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <Input id="email" name="email" type="email" value={formData.email} onChange={handleChange} required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="phone">Phone</Label>
+                <Input id="phone" name="phone" value={formData.phone} onChange={handleChange} required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="address">Address</Label>
+                <Input id="address" name="address" value={formData.address} onChange={handleChange} required />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="message">Message</Label>
+              <Textarea id="message" name="message" value={formData.message} onChange={handleChange} required />
+            </div>
+            <Button type="submit" className="w-full">Submit</Button>
+          </form>
+        </CardContent>
+      </Card>
 
-      <div style={{ marginTop: 20 }}>
-        <h3>Live Form Data</h3>
-        <LiveFormDataTable formData={formData} />
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Live Form Data</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <LiveFormDataTable formData={formData} />
+        </CardContent>
+      </Card>
 
       {submissions.length > 0 && (
-        <div style={{ marginTop: 30 }}>
-          <h3>Submitted Data ({submissions.length})</h3>
-          <SubmissionsTable submissions={submissions} />
-        </div>
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">Submitted Data</CardTitle>
+              <Badge variant="secondary">{submissions.length}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <SubmissionsTable submissions={submissions} />
+          </CardContent>
+        </Card>
       )}
-    </>
+    </div>
   )
 }
 
 function ViewSubmissions({ submissions }) {
   return (
-    <>
-      <h3>All Submissions ({submissions.length})</h3>
-      <SubmissionsTable submissions={submissions} />
-    </>
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CardTitle>All Submissions</CardTitle>
+            <Badge variant="secondary">{submissions.length}</Badge>
+          </div>
+          {submissions.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {submissions.length} {submissions.length === 1 ? 'record' : 'records'}
+            </p>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        <SubmissionsTable submissions={submissions} />
+      </CardContent>
+    </Card>
+  )
+}
+
+function DarkModeToggle() {
+  const [dark, setDark] = useState(() =>
+    document.documentElement.classList.contains('dark')
+  )
+
+  useEffect(() => {
+    if (dark) {
+      document.documentElement.classList.add('dark')
+      localStorage.setItem('theme', 'dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+      localStorage.setItem('theme', 'light')
+    }
+  }, [dark])
+
+  useEffect(() => {
+    const saved = localStorage.getItem('theme')
+    if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      setDark(true)
+    }
+  }, [])
+
+  return (
+    <Button variant="outline" size="icon" onClick={() => setDark(!dark)} aria-label="Toggle dark mode">
+      {dark ? (
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      ) : (
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      )}
+    </Button>
   )
 }
 
@@ -197,7 +299,6 @@ function App() {
   const [loggedIn, setLoggedIn] = useState(false)
   const [loginError, setLoginError] = useState('')
   const [submissions, setSubmissions] = useState([])
-  const [currentPage, setCurrentPage] = useState('form')
   const [username, setUsername] = useState('')
 
   const handleLogin = async (user, password) => {
@@ -214,7 +315,6 @@ function App() {
 
   const handleLogout = () => {
     setLoggedIn(false)
-    setCurrentPage('form')
     setUsername('')
     setSubmissions([])
   }
@@ -229,30 +329,38 @@ function App() {
   }
 
   return (
-    <div style={{ maxWidth: 500, margin: '40px auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            onClick={() => setCurrentPage('form')}
-            style={{ fontWeight: currentPage === 'form' ? 'bold' : 'normal' }}
-          >
-            Submit Form
-          </button>
-          <button
-            onClick={() => setCurrentPage('view')}
-            style={{ fontWeight: currentPage === 'view' ? 'bold' : 'normal' }}
-          >
-            View Submissions ({submissions.length})
-          </button>
+    <div className="min-h-screen bg-muted/30">
+      <div className="mx-auto max-w-5xl p-6 space-y-6">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">
+            Logged in as <span className="font-medium text-foreground">{username}</span>
+          </p>
+          <div className="flex items-center gap-2">
+            <DarkModeToggle />
+            <Button variant="outline" size="sm" onClick={handleLogout}>
+              Logout
+            </Button>
+          </div>
         </div>
-        <button onClick={handleLogout}>Logout</button>
-      </div>
 
-      {currentPage === 'form' ? (
-        <FormPage submissions={submissions} onSubmit={handleFormSubmit} />
-      ) : (
-        <ViewSubmissions submissions={submissions} />
-      )}
+        <Tabs defaultValue="form">
+          <TabsList className="w-full">
+            <TabsTrigger value="form" className="flex-1">Submit Form</TabsTrigger>
+            <TabsTrigger value="view" className="flex-1">
+              View Submissions
+              {submissions.length > 0 && (
+                <Badge variant="secondary" className="ml-2">{submissions.length}</Badge>
+              )}
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="form">
+            <FormPage submissions={submissions} onSubmit={handleFormSubmit} />
+          </TabsContent>
+          <TabsContent value="view">
+            <ViewSubmissions submissions={submissions} />
+          </TabsContent>
+        </Tabs>
+      </div>
     </div>
   )
 }
