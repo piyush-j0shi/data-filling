@@ -314,9 +314,10 @@ function ViewSubmissions({ submissions }) {
 }
 
 function DarkModeToggle() {
-  const [dark, setDark] = useState(() =>
-    document.documentElement.classList.contains('dark')
-  )
+  const [dark, setDark] = useState(() => {
+    const saved = localStorage.getItem('theme')
+    return saved ? saved === 'dark' : true
+  })
 
   useEffect(() => {
     if (dark) {
@@ -330,7 +331,7 @@ function DarkModeToggle() {
 
   useEffect(() => {
     const saved = localStorage.getItem('theme')
-    if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+    if (!saved) {
       setDark(true)
     }
   }, [])
