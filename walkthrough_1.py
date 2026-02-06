@@ -71,18 +71,44 @@ async def navigate_to_url(url: str) -> str:
 
 @tool
 async def get_page_html() -> str:
-    """Returns cleaned HTML of the current page. Use this to discover form fields, buttons, and links."""
+    """Returns interactive elements on the current page: inputs, buttons, links, selects, textareas, and labels with their attributes."""
     page = get_page()
     try:
-        html = await page.evaluate("""() => {
-            const clone = document.body.cloneNode(true);
-            clone.querySelectorAll('script, style, svg, noscript, link[rel="stylesheet"]').forEach(el => el.remove());
-            return clone.innerHTML;
+        elements = await page.evaluate("""() => {
+            const results = [];
+            const tags = ['input', 'button', 'a', 'select', 'textarea', 'label', 'form', 'option'];
+            const attrs = ['id', 'name', 'type', 'placeholder', 'value', 'href', 'for', 'class', 'role', 'aria-label'];
+            for (const tag of tags) {
+                for (const el of document.querySelectorAll(tag)) {
+                    const info = {tag: tag};
+                    for (const a of attrs) {
+                        const v = el.getAttribute(a);
+                        if (v && v.trim()) info[a] = v.trim().substring(0, 80);
+                    }
+                    const text = el.textContent?.trim().substring(0, 60);
+                    if (text) info.text = text;
+                    results.push(info);
+                }
+            }
+            return results;
         }""")
-        html = re.sub(r'\s+', ' ', html).strip()
-        if len(html) > 15000:
-            html = html[:15000] + "\n... (truncated)"
-        return html
+        if not elements:
+            return "No interactive elements found on the page."
+        lines = []
+        for el in elements:
+            parts = [f"<{el.pop('tag')}"]
+            for k, v in el.items():
+                if k != 'text':
+                    parts.append(f'{k}="{v}"')
+            text = el.get('text', '')
+            tag_str = ' '.join(parts) + '>'
+            if text:
+                tag_str += text
+            lines.append(tag_str)
+        result = '\n'.join(lines)
+        if len(result) > 4000:
+            result = result[:4000] + '\n... (truncated)'
+        return result
     except Exception as e:
         return f"Failed to get page HTML: {e}"
 
@@ -193,7 +219,10 @@ def create_automation_agent():
     workflow = StateGraph(AgentState)
 
     async def call_model(state):
-        messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+        all_msgs = list(state["messages"])
+        if len(all_msgs) > 22:
+            all_msgs = all_msgs[:1] + all_msgs[-20:]
+        messages = [SystemMessage(content=SYSTEM_PROMPT)] + all_msgs
         response = await llm.bind_tools(tools).ainvoke(messages)
 
         if hasattr(response, 'tool_calls') and len(response.tool_calls) > 1:
