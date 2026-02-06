@@ -71,24 +71,51 @@ async def navigate_to_url(url: str) -> str:
 
 @tool
 async def get_page_html() -> str:
-    """Returns interactive elements on the current page: inputs, buttons, links, selects, textareas, and labels with their attributes."""
+    """Returns VISIBLE interactive elements on the current page: inputs, buttons, links, selects, textareas, custom components (role-based), and contenteditable areas."""
     page = get_page()
     try:
         elements = await page.evaluate("""() => {
             const results = [];
-            const tags = ['input', 'button', 'a', 'select', 'textarea', 'label', 'form', 'option'];
-            const attrs = ['id', 'name', 'type', 'placeholder', 'value', 'href', 'for', 'class', 'role', 'aria-label'];
-            for (const tag of tags) {
-                for (const el of document.querySelectorAll(tag)) {
-                    const info = {tag: tag};
-                    for (const a of attrs) {
-                        const v = el.getAttribute(a);
-                        if (v && v.trim()) info[a] = v.trim().substring(0, 80);
-                    }
-                    const text = el.textContent?.trim().substring(0, 60);
-                    if (text) info.text = text;
-                    results.push(info);
+            const seen = new Set();
+
+            // Standard interactive tags
+            const tagSelector = 'input, button, a, select, textarea, label, form, option';
+            // ARIA role-based elements (catches framework components like mat-select, ant-dropdown, etc.)
+            const roleSelector = '[role="button"], [role="combobox"], [role="listbox"], [role="option"], [role="textbox"], [role="link"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="radio"], [role="switch"], [role="slider"]';
+            // Other interactive patterns
+            const interactiveSelector = '[contenteditable="true"], [onclick], [data-testid], [tabindex]:not([tabindex="-1"])';
+
+            const combined = `${tagSelector}, ${roleSelector}, ${interactiveSelector}`;
+            const attrs = ['id', 'name', 'type', 'placeholder', 'value', 'href', 'for',
+                           'class', 'role', 'aria-label', 'data-testid', 'data-field',
+                           'contenteditable', 'action', 'method'];
+
+            for (const el of document.querySelectorAll(combined)) {
+                // Visibility check: skip elements hidden by CSS or zero-size
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+                if (el.offsetWidth === 0 && el.offsetHeight === 0 && el.tagName !== 'INPUT' && el.tagName !== 'OPTION') continue;
+
+                // Dedupe by DOM node
+                if (seen.has(el)) continue;
+                seen.add(el);
+
+                const tag = el.tagName.toLowerCase();
+                const info = {tag: tag};
+
+                for (const a of attrs) {
+                    const v = el.getAttribute(a);
+                    if (v && v.trim()) info[a] = v.trim().substring(0, 80);
                 }
+
+                // Mark disabled/readonly state
+                if (el.disabled) info.disabled = 'true';
+                if (el.readOnly) info.readonly = 'true';
+
+                const text = el.textContent?.trim().substring(0, 60);
+                if (text) info.text = text;
+
+                results.push(info);
             }
             return results;
         }""")
@@ -96,7 +123,8 @@ async def get_page_html() -> str:
             return "No interactive elements found on the page."
         lines = []
         for el in elements:
-            parts = [f"<{el.pop('tag')}"]
+            tag = el.pop('tag')
+            parts = [f"<{tag}"]
             for k, v in el.items():
                 if k != 'text':
                     parts.append(f'{k}="{v}"')
@@ -190,11 +218,14 @@ SYSTEM_PROMPT = """You are a browser automation agent. You can work with any web
 
 RULES:
 1. ALWAYS call get_page_html first to discover the page structure before interacting with any elements.
-2. NEVER guess CSS selectors. Only use selectors you found in the HTML.
-3. Map data fields to form fields by meaning, not exact name match.
-4. Submit form entries ONE AT A TIME. Wait for each to complete before the next.
-5. After clicking submit or navigating, call get_page_html again to see the updated page.
-6. For multi-step forms, fill visible fields, click Next or Submit, then read the new page."""
+2. NEVER guess CSS selectors. Only use selectors you found from get_page_html.
+3. Build selectors from id, name, data-testid, or role attributes. Prefer #id or [name="x"] over class-based selectors.
+4. Map data fields to form fields by meaning, not exact name match.
+5. Submit form entries ONE AT A TIME. Wait for each to complete before the next.
+6. After clicking submit or navigating, call get_page_html again to see the updated page.
+7. For multi-step forms, fill visible fields, click Next or Submit, then read the new page.
+8. Elements marked disabled="true" or readonly="true" cannot be interacted with — skip them.
+9. For custom dropdowns (role="combobox" or role="listbox"), click to open, then click the role="option" element."""
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
