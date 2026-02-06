@@ -9,7 +9,6 @@ app = FastAPI()
 FORM_DATA_FILE = Path(__file__).parent / "form_data.json"
 WALKTHROUGH_SCRIPT = Path(__file__).parent / "walkthrough_1.py"
 
-
 @app.post("/run")
 async def run_walkthrough(file: UploadFile = File(...)):
     if not file.filename.endswith(".json"):
@@ -21,10 +20,8 @@ async def run_walkthrough(file: UploadFile = File(...)):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON in uploaded file")
 
-    # Write the uploaded JSON to form_data.json
     FORM_DATA_FILE.write_text(json.dumps(data, indent=2))
 
-    # Run walkthrough_1.py as a subprocess
     result = subprocess.run(
         [sys.executable, str(WALKTHROUGH_SCRIPT)],
         capture_output=True,
