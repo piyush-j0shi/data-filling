@@ -10,3 +10,4 @@ uvicorn>=0.34.0
 python-dotenv>=1.0.0
 nest-asyncio>=1.6.0
 langchain-groq>=0.2.0
+python-multipart
