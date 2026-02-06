@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 
 from typing import Annotated, Sequence
 from typing_extensions import TypedDict
@@ -22,7 +23,9 @@ load_dotenv()
 FORM_DATA_FILE = "form_data.json"
 APP_URL = os.environ.get("APP_URL", "https://your-public-ngrok-url.ngrok-free.app")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
-BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")    
+BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
+LOGIN_USERNAME = os.environ.get("LOGIN_USERNAME", "")
+LOGIN_PASSWORD = os.environ.get("LOGIN_PASSWORD", "")
 
 _page_holder: dict[str, Page | None] = {"page": None}
 
@@ -74,51 +77,216 @@ async def login(username: str, password: str) -> str:
     page = get_page()
     try:
         await page.wait_for_selector('form', timeout=10000, state="visible")
-        await page.locator('form input').first.fill(username, timeout=5000)
+
+        # Find username field by type/role — try text/email inputs, skip password fields
+        username_field = page.locator(
+            'form input[type="text"], form input[type="email"], '
+            'form input:not([type])'
+        ).first
+        await username_field.fill(username, timeout=5000)
+
         await page.locator('input[type="password"]').fill(password, timeout=5000)
-        await page.click('button[type="submit"]', timeout=5000)
-        await page.wait_for_selector('input[name="name"]', timeout=10000, state="visible")
-        await page.wait_for_timeout(1500)
+
+        # Find submit button by role, falling back to any button in the form
+        submit_btn = page.get_by_role("button", name=re.compile(r"log\s*in|sign\s*in|submit", re.IGNORECASE))
+        if await submit_btn.count() > 0:
+            await submit_btn.first.click(timeout=5000)
+        else:
+            await page.locator('form button, form input[type="submit"]').first.click(timeout=5000)
+
+        await page.wait_for_timeout(3000)
         return f"Successfully logged in as '{username}'"
-    
+
     except Exception as e:
-        return f"✗ Login failed: {str(e)}"
+        return f"Login failed: {str(e)}"
 
 @tool
-async def fill_and_submit_form(name: str, email: str, phone: str, address: str, message: str) -> str:
-    """Fills out and submits ONE form entry. Wait for this to complete before calling again."""
+async def get_form_fields() -> str:
+    """Discovers all visible form fields on the current page and returns their details.
+    Checks name, id, placeholder, aria-label, aria-labelledby, and both explicit and
+    implicit label associations. Call this BEFORE fill_and_submit_form so you know
+    what field names the form expects."""
     page = get_page()
     try:
-        await page.wait_for_selector('input[name="name"]', timeout=10000, state="visible")
+        await page.wait_for_selector(
+            'input, textarea, select, [role="textbox"], [role="combobox"], [role="listbox"], [contenteditable="true"]',
+            timeout=10000, state="visible"
+        )
         await page.wait_for_timeout(500)
-        
-        await page.fill('input[name="name"]', name, timeout=5000)
-        await page.wait_for_timeout(200)
-        
-        await page.fill('input[name="email"]', email, timeout=5000)
-        await page.wait_for_timeout(200)
-        
-        await page.fill('input[name="phone"]', phone, timeout=5000)
-        await page.wait_for_timeout(200)
-        
-        await page.fill('input[name="address"]', address, timeout=5000)
-        await page.wait_for_timeout(200)
-        
-        await page.fill('textarea[name="message"]', message, timeout=5000)
-        await page.wait_for_timeout(200)
-        
-        await page.click('button[type="submit"]', timeout=5000)
-        await page.wait_for_timeout(1000)
-        
-        name_value = await page.input_value('input[name="name"]')
-        
-        if name_value == "":
-            return f"Successfully submitted form for '{name}' (form cleared)"
-        else:
-            return f"Submitted form for '{name}' but form may not have cleared"
-            
+
+        fields = await page.evaluate("""() => {
+            const results = [];
+            const elements = document.querySelectorAll(
+                'input, textarea, select, [role="textbox"], [role="combobox"], [role="listbox"], [contenteditable="true"]'
+            );
+            for (const el of elements) {
+                if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button') continue;
+                if (el.offsetParent === null) continue;
+
+                // Explicit label: <label for="id">
+                let labelText = '';
+                if (el.id) {
+                    const explicitLabel = document.querySelector('label[for="' + el.id + '"]');
+                    if (explicitLabel) labelText = explicitLabel.textContent.trim();
+                }
+
+                // Implicit label: <label><input/></label>
+                if (!labelText) {
+                    const parentLabel = el.closest('label');
+                    if (parentLabel) {
+                        const clone = parentLabel.cloneNode(true);
+                        clone.querySelectorAll('input, textarea, select').forEach(c => c.remove());
+                        labelText = clone.textContent.trim();
+                    }
+                }
+
+                // aria-labelledby
+                let ariaLabelledBy = '';
+                const labelledById = el.getAttribute('aria-labelledby');
+                if (labelledById) {
+                    const refEl = document.getElementById(labelledById);
+                    if (refEl) ariaLabelledBy = refEl.textContent.trim();
+                }
+
+                results.push({
+                    tag: el.tagName.toLowerCase(),
+                    type: el.type || el.getAttribute('role') || '',
+                    name: el.name || '',
+                    id: el.id || '',
+                    placeholder: el.placeholder || '',
+                    label: labelText,
+                    ariaLabel: el.getAttribute('aria-label') || '',
+                    ariaLabelledBy: ariaLabelledBy
+                });
+            }
+            return results;
+        }""")
+
+        if not fields:
+            return "No visible form fields found on the page."
+        return json.dumps(fields, indent=2)
+
     except Exception as e:
-        return f"Form submission failed for '{name}': {str(e)}"
+        return f"Error discovering form fields: {str(e)}"
+
+def _scan_fields_js():
+    """JS snippet to discover visible form fields with full label detection."""
+    return """() => {
+        const results = [];
+        const elements = document.querySelectorAll(
+            'input, textarea, select, [role="textbox"], [role="combobox"], [contenteditable="true"]'
+        );
+        for (const el of elements) {
+            if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button') continue;
+            if (el.offsetParent === null) continue;
+
+            let labelText = '';
+            if (el.id) {
+                const explicitLabel = document.querySelector('label[for="' + el.id + '"]');
+                if (explicitLabel) labelText = explicitLabel.textContent.trim();
+            }
+            if (!labelText) {
+                const parentLabel = el.closest('label');
+                if (parentLabel) {
+                    const clone = parentLabel.cloneNode(true);
+                    clone.querySelectorAll('input, textarea, select').forEach(c => c.remove());
+                    labelText = clone.textContent.trim();
+                }
+            }
+
+            let ariaLabelledBy = '';
+            const labelledById = el.getAttribute('aria-labelledby');
+            if (labelledById) {
+                const refEl = document.getElementById(labelledById);
+                if (refEl) ariaLabelledBy = refEl.textContent.trim();
+            }
+
+            results.push({
+                tag: el.tagName.toLowerCase(),
+                type: el.type || el.getAttribute('role') || '',
+                name: el.name || '',
+                id: el.id || '',
+                placeholder: el.placeholder || '',
+                label: labelText,
+                ariaLabel: el.getAttribute('aria-label') || '',
+                ariaLabelledBy: ariaLabelledBy
+            });
+        }
+        return results;
+    }"""
+
+@tool
+async def fill_and_submit_form(form_data: str) -> str:
+    """Fills out and submits ONE form entry. form_data is a JSON string of key-value pairs
+    (e.g. '{"name": "Alice", "email": "alice@example.com"}'). Keys must match the actual
+    form field names you discovered with get_form_fields. Wait for this to complete
+    before calling again."""
+    page = get_page()
+    try:
+        data = json.loads(form_data)
+    except json.JSONDecodeError:
+        return f"Invalid JSON in form_data: {form_data}"
+    try:
+        await page.wait_for_selector(
+            'input, textarea, select, [role="textbox"], [role="combobox"], [contenteditable="true"]',
+            timeout=10000, state="visible"
+        )
+        await page.wait_for_timeout(500)
+
+        filled = []
+        for key, value in data.items():
+            # Re-scan fields before each fill to catch dynamically rendered fields
+            fields = await page.evaluate(_scan_fields_js())
+            key_lower = key.lower()
+            matched = False
+
+            for field in fields:
+                field_identifiers = [
+                    field['name'].lower(),
+                    field['id'].lower(),
+                    field['placeholder'].lower(),
+                    field['label'].lower(),
+                    field.get('ariaLabel', '').lower(),
+                    field.get('ariaLabelledBy', '').lower()
+                ]
+                if key_lower in field_identifiers or any(key_lower in ident for ident in field_identifiers if ident):
+                    tag = field['tag']
+                    selector = None
+                    if field['name']:
+                        selector = f"{tag}[name=\"{field['name']}\"]"
+                    elif field['id']:
+                        selector = f"#{field['id']}"
+                    elif field.get('ariaLabel'):
+                        selector = f"[aria-label=\"{field['ariaLabel']}\"]"
+
+                    if selector:
+                        await page.fill(selector, str(value), timeout=5000)
+                        await page.wait_for_timeout(300)
+                        filled.append(key)
+                        matched = True
+                        break
+            if not matched:
+                filled.append(f"{key} (no match)")
+
+        # Smart submit: try role-based, then type="submit", then any button with submit-like text
+        submit_btn = page.get_by_role("button", name=re.compile(r"submit|save|send|create|add", re.IGNORECASE))
+        if await submit_btn.count() > 0:
+            await submit_btn.first.click(timeout=5000)
+        elif await page.locator('button[type="submit"], input[type="submit"]').count() > 0:
+            await page.locator('button[type="submit"], input[type="submit"]').first.click(timeout=5000)
+        else:
+            # Last resort: click the last button in the form (often the submit)
+            form_buttons = page.locator('form button, form [role="button"]')
+            if await form_buttons.count() > 0:
+                await form_buttons.last.click(timeout=5000)
+            else:
+                return f"Filled fields {filled} but could not find a submit button"
+
+        await page.wait_for_timeout(1000)
+        return f"Submitted form with fields: {filled}"
+
+    except Exception as e:
+        return f"Form submission failed: {str(e)}"
 
 @tool
 async def get_page_content() -> str:
@@ -134,30 +302,6 @@ async def get_page_content() -> str:
     
     except Exception as e:
         return f"Error retrieving page content: {str(e)}"
-
-@tool
-async def get_submission_count() -> str:
-    """Returns the number of submissions shown in the table."""
-    page = get_page()
-    try:
-        await page.wait_for_timeout(1000)
-        rows = await page.locator('table tbody tr').count()
-        return f"Found {rows} submission(s) in the table"
-    
-    except Exception as e:
-        return f"Could not count submissions: {str(e)}"
-
-@tool
-async def click_view_submissions() -> str:
-    """Clicks the 'View Submissions' button to see all submitted data."""
-    page = get_page()
-    try:
-        await page.click('button:has-text("View Submissions")', timeout=5000)
-        await page.wait_for_timeout(1000)
-        return " Navigated to View Submissions page"
-    
-    except Exception as e:
-        return f"Failed to click View Submissions: {str(e)}"
 
 @tool
 async def click_submit_form() -> str:
@@ -183,49 +327,47 @@ def create_automation_agent():
     tools = [
         navigate_to_app,
         login,
+        get_form_fields,
         fill_and_submit_form,
         get_page_content,
-        get_submission_count,
-        click_view_submissions,
         click_submit_form
     ]
     
     workflow = StateGraph(AgentState)
     
     async def call_model(state):
-        sys_msg = SystemMessage(content="""You are a browser automation agent for a React form application.
+        sys_msg = SystemMessage(content="""You are a browser automation agent that can fill and submit any web form.
 
 CRITICAL RULES FOR FORM SUBMISSION:
-1. You MUST call fill_and_submit_form() ONE AT A TIME for each entry
-2. You MUST wait for each submission to complete before starting the next one
-3. NEVER call fill_and_submit_form() multiple times in parallel - this causes DOM detachment errors
-4. After each fill_and_submit_form() call, the tool will tell you if it succeeded
+1. You MUST call get_form_fields() FIRST to discover what fields the form has
+2. You MUST then map the user's data keys to the actual field names on the page
+3. You MUST call fill_and_submit_form() ONE AT A TIME for each entry
+4. You MUST wait for each submission to complete before starting the next one
+5. NEVER call fill_and_submit_form() multiple times in parallel - this causes DOM detachment errors
 
-CORRECT WORKFLOW:
+WORKFLOW:
 Step 1: navigate_to_app()
-Step 2: login("admin", "admin")  
-Step 3: fill_and_submit_form() for Entry 1 → WAIT for success
-Step 4: fill_and_submit_form() for Entry 2 → WAIT for success
-Step 5: fill_and_submit_form() for Entry 3 → WAIT for success
-... (repeat for all entries, ONE AT A TIME)
-Step N: click_view_submissions()
-Step N+1: get_submission_count()
+Step 2: If login credentials are provided, call login(). Otherwise skip.
+Step 3: Call get_form_fields() to discover the actual field names/ids on the form.
+Step 4: For EACH entry, map the user's data keys to the actual form field names you discovered. Build a JSON object using the ACTUAL field names as keys, then call fill_and_submit_form(form_data). WAIT for success before the next entry.
+Step 5: get_page_content() to verify
 
-WRONG APPROACH (DO NOT DO THIS):
-Calling fill_and_submit_form() multiple times in one response
-Example: [fill_and_submit_form(entry1), fill_and_submit_form(entry2)]
-This causes elements to detach from the DOM
+IMPORTANT - FIELD MAPPING:
+The user's data keys may NOT match the form's field names exactly.
+For example, user data might say "name" but the form field might be called "full_name".
+Or user data says "phone" but the form has "phone_number".
+Use get_form_fields() to see the real field names (name, id, placeholder, label, ariaLabel, ariaLabelledBy), then remap the user's data accordingly.
+The form_data JSON you pass to fill_and_submit_form MUST use the actual field names (the "name" or "id" attribute) from the form.
 
 Your tools:
 - navigate_to_app() - Goes to the app URL
-- login(username, password) - Logs in (use "admin", "admin")
-- fill_and_submit_form(name, email, phone, address, message) - Submits ONE entry at a time
+- login(username, password) - Logs in (only use if credentials are provided)
+- get_form_fields() - Returns all visible form fields with name, id, placeholder, label, ariaLabel, ariaLabelledBy. Also detects ARIA roles (textbox, combobox) and contenteditable elements. CALL THIS FIRST before filling any form.
+- fill_and_submit_form(form_data) - Submits ONE entry. form_data is a JSON string where keys must match the actual field names from get_form_fields. The tool re-scans fields before each fill to handle dynamically rendered fields. It also auto-detects the submit button.
 - get_page_content() - Gets current page text
-- get_submission_count() - Counts rows in table
-- click_view_submissions() - Switches to view page
-- click_submit_form() - Switches back to form page
+- click_submit_form() - Clicks a "Submit Form" navigation button if available
 
-Remember: Process entries SEQUENTIALLY, not in parallel!""")
+Remember: DISCOVER fields first, MAP data to real field names, then fill SEQUENTIALLY!""")
         
         messages = [sys_msg] + state["messages"]
         response = await llm.bind_tools(tools).ainvoke(messages)
@@ -271,25 +413,28 @@ async def run_agent():
 
         entries_list = []
         for i, entry in enumerate(form_data, 1):
-            entries_list.append(
-                f"Entry {i}: name='{entry['name']}', email='{entry['email']}', "
-                f"phone='{entry['phone']}', address='{entry['address']}', "
-                f"message='{entry['message'][:50]}...'"
-            )
+            entries_list.append(f"Entry {i}: {json.dumps(entry)}")
+
+        login_step = ""
+        if LOGIN_USERNAME and LOGIN_PASSWORD:
+            login_step = f'2. Log in with username="{LOGIN_USERNAME}" and password="{LOGIN_PASSWORD}"\n'
+            step_offset = 3
+        else:
+            step_offset = 2
 
         user_message = f"""Please complete this workflow step-by-step:
 
 1. Navigate to the application
-2. Log in with username="admin" and password="admin"
-3. Submit these {len(form_data)} form entries ONE AT A TIME (wait for each to complete):
+{login_step}{step_offset}. Call get_form_fields() to discover what fields the form has
+{step_offset + 1}. Submit these {len(form_data)} form entries ONE AT A TIME (wait for each to complete).
+   For each entry, MAP the data keys below to the actual form field names you discovered, then call fill_and_submit_form with the correctly mapped JSON:
 
 {chr(10).join(entries_list)}
 
-4. After ALL entries are submitted, click "View Submissions"
-5. Get the submission count and verify all {len(form_data)} entries are there
-6. Report the final count
+{step_offset + 2}. After ALL entries are submitted, use get_page_content() to verify
+{step_offset + 3}. Report the results
 
-IMPORTANT: Submit forms SEQUENTIALLY - wait for each submission to complete before starting the next one!"""
+IMPORTANT: Discover fields FIRST, then map data keys to real field names, then submit SEQUENTIALLY!"""
 
         result = await graph.ainvoke({"messages": [("user", user_message)]})
 
