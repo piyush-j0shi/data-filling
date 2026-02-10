@@ -60,18 +60,18 @@ async def get_bedrock_browser():
 
 @tool
 async def navigate_to_url(url: str) -> str:
-    """Navigates the browser to the specified URL."""
+    """Navigate the browser to a URL."""
     page = get_page()
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(2000)
-        return f"Navigated to {url}"
+        return "Done"
     except Exception as e:
-        return f"Navigation failed: {e}"
+        return f"Failed: {e}"
 
 @tool
 async def get_page_html() -> str:
-    """Returns VISIBLE interactive elements on the current page: inputs, buttons, links, selects, textareas, custom components (role-based), and contenteditable areas."""
+    """Returns visible interactive elements on the current page."""
     page = get_page()
     try:
         elements = await page.evaluate("""() => {
@@ -87,7 +87,7 @@ async def get_page_html() -> str:
 
             const combined = `${tagSelector}, ${roleSelector}, ${interactiveSelector}`;
             const attrs = ['id', 'name', 'type', 'placeholder', 'value', 'href', 'for',
-                           'class', 'role', 'aria-label', 'data-testid', 'data-field',
+                           'role', 'aria-label', 'data-testid', 'data-field',
                            'contenteditable', 'action', 'method'];
 
             for (const el of document.querySelectorAll(combined)) {
@@ -142,7 +142,7 @@ async def get_page_html() -> str:
 
 @tool
 async def get_page_text() -> str:
-    """Returns the visible text on the current page."""
+    """Returns visible text on the page."""
     page = get_page()
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=5000)
@@ -156,31 +156,31 @@ async def get_page_text() -> str:
 
 @tool
 async def fill_field(selector: str, value: str) -> str:
-    """Fills a form field identified by a CSS selector with the given value."""
+    """Fill a form field by CSS selector with a value."""
     page = get_page()
     try:
         await page.wait_for_selector(selector, timeout=5000, state="visible")
         await page.fill(selector, value, timeout=5000)
         await page.wait_for_timeout(200)
-        return f"Filled '{selector}' with '{value[:50]}{'...' if len(value) > 50 else ''}'"
+        return f"Filled {selector}"
     except Exception as e:
-        return f"Failed to fill '{selector}': {e}"
+        return f"Failed {selector}: {e}"
 
 @tool
 async def click_element(selector: str) -> str:
-    """Clicks an element identified by a CSS selector."""
+    """Click an element by CSS selector."""
     page = get_page()
     try:
         await page.wait_for_selector(selector, timeout=5000, state="visible")
         await page.click(selector, timeout=5000)
         await page.wait_for_timeout(1000)
-        return f"Clicked '{selector}'"
+        return f"Clicked {selector}"
     except Exception as e:
-        return f"Failed to click '{selector}': {e}"
+        return f"Failed {selector}: {e}"
 
 @tool
 async def select_option(selector: str, value: str) -> str:
-    """Selects an option from a dropdown element identified by a CSS selector."""
+    """Select a dropdown option by CSS selector."""
     page = get_page()
     try:
         await page.wait_for_selector(selector, timeout=5000, state="visible")
@@ -189,30 +189,30 @@ async def select_option(selector: str, value: str) -> str:
         except Exception:
             await page.select_option(selector, label=value, timeout=3000)
         await page.wait_for_timeout(200)
-        return f"Selected '{value}' in '{selector}'"
+        return f"Selected {value} in {selector}"
     except Exception as e:
-        return f"Failed to select option in '{selector}': {e}"
+        return f"Failed {selector}: {e}"
 
 @tool
 async def press_key(key: str) -> str:
-    """Presses a keyboard key such as Enter, Tab, or Escape."""
+    """Press a keyboard key (Enter, Tab, Escape, etc)."""
     page = get_page()
     try:
         await page.keyboard.press(key)
         await page.wait_for_timeout(500)
-        return f"Pressed '{key}'"
+        return f"Pressed {key}"
     except Exception as e:
-        return f"Failed to press '{key}': {e}"
+        return f"Failed: {e}"
 
 @tool
 async def wait_for_element(selector: str, timeout: int = 10000) -> str:
-    """Waits for an element matching the CSS selector to appear on the page."""
+    """Wait for an element by CSS selector to appear."""
     page = get_page()
     try:
         await page.wait_for_selector(selector, timeout=timeout, state="visible")
-        return f"Element '{selector}' is now visible"
+        return f"Visible: {selector}"
     except Exception as e:
-        return f"Timed out waiting for '{selector}': {e}"
+        return f"Timeout {selector}: {e}"
 
 SYSTEM_PROMPT = """You are a browser automation agent. You can work with any web application.
 
@@ -251,8 +251,8 @@ def create_automation_agent():
 
     async def call_model(state):
         all_msgs = list(state["messages"])
-        if len(all_msgs) > 22:
-            all_msgs = all_msgs[:1] + all_msgs[-20:]
+        if len(all_msgs) > 16:
+            all_msgs = all_msgs[:1] + all_msgs[-14:]
         messages = [SystemMessage(content=SYSTEM_PROMPT)] + all_msgs
         response = await llm.bind_tools(tools).ainvoke(messages)
 
@@ -326,9 +326,7 @@ Tasks:
 {chr(10).join(entries_desc)}
 
 5. After ALL entries are submitted, look for a way to view/verify the submissions (e.g., a "View Submissions" tab or page)
-6. Read the page and report how many submissions are shown
-
-IMPORTANT: Always read the page HTML first before interacting. Submit entries sequentially."""
+6. Read the page and report how many submissions are shown"""
 
         result = await graph.ainvoke(
             {"messages": [("user", user_message)]},
