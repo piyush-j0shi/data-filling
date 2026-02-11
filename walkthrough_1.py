@@ -291,7 +291,6 @@ ERROR_KEYWORDS = ["failed", "error", "could not", "unable", "not found", "timeou
 MAX_RETRIES = 1
 
 def _detect_failure(message) -> str | None:
-    """Check if the agent's final message indicates a failure. Returns the reason or None."""
     content = message.content if hasattr(message, 'content') else str(message)
     content_lower = content.lower()
     for keyword in ERROR_KEYWORDS:
