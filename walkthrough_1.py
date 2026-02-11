@@ -287,6 +287,18 @@ def load_form_data(filepath: str) -> list[dict]:
     with open(filepath, "r") as f:
         return json.load(f)
 
+ERROR_KEYWORDS = ["failed", "error", "could not", "unable", "not found", "timeout", "exception"]
+MAX_RETRIES = 1
+
+def _detect_failure(message) -> str | None:
+    """Check if the agent's final message indicates a failure. Returns the reason or None."""
+    content = message.content if hasattr(message, 'content') else str(message)
+    content_lower = content.lower()
+    for keyword in ERROR_KEYWORDS:
+        if keyword in content_lower:
+            return content
+    return None
+
 async def run_agent():
     nest_asyncio.apply()
 
@@ -304,15 +316,10 @@ async def run_agent():
         print(f"Connected to Bedrock Browser\n")
         print("=" * 70)
 
-        entries_desc = []
-        for i, entry in enumerate(form_data, 1):
-            fields = ', '.join(f'{k}="{v}"' for k, v in entry.items())
-            entries_desc.append(f"  Entry {i}: {fields}")
-            
         username = os.environ.get("LOGIN_USERNAME", "admin")
         password = os.environ.get("LOGIN_PASSWORD", "admin")
 
-        user_message = f"""Please automate the following workflow on the web application:
+        login_message = f"""Please automate the following workflow on the web application:
 
 Application URL: {APP_URL}
 Login credentials: username="{username}", password="{password}"
@@ -320,19 +327,94 @@ Login credentials: username="{username}", password="{password}"
 Tasks:
 1. Navigate to the application URL
 2. Read the page to understand the login form, then log in with the given credentials
-3. After logging in, read the page to understand the form structure
-4. Submit these {len(form_data)} data entries ONE AT A TIME (wait for each to complete before starting the next):
+3. After logging in, read the page to understand the form structure and confirm you are logged in"""
 
-{chr(10).join(entries_desc)}"""
-
+        print("Phase 1: Logging in...")
+        print("-" * 70)
         result = await graph.ainvoke(
-            {"messages": [("user", user_message)]},
-            {"recursion_limit": 100}
+            {"messages": [("user", login_message)]},
+            {"recursion_limit": 30}
         )
+        current_messages = list(result["messages"])
+        print("-" * 70)
 
+        results = []
+
+        for i, entry in enumerate(form_data, 1):
+            fields = ', '.join(f'{k}="{v}"' for k, v in entry.items())
+            print(f"\nEntry {i}/{len(form_data)}: {fields}")
+            print("-" * 70)
+
+            entry_message = f"""Now submit the following data entry into the form:
+{fields}
+
+Steps:
+1. First call get_page_html to see the current form
+2. Fill in each field using the appropriate tool
+3. Click the submit button
+4. Confirm the submission was successful by reading the page after submit"""
+
+            success = False
+            failure_reason = ""
+
+            for attempt in range(1 + MAX_RETRIES):
+                if attempt > 0:
+                    print(f"  Retrying entry {i} (attempt {attempt + 1})...")
+
+                try:
+                    entry_result = await graph.ainvoke(
+                        {"messages": current_messages + [("user", entry_message)]},
+                        {"recursion_limit": 30}
+                    )
+                    final_msg = entry_result["messages"][-1]
+                    failure_reason = _detect_failure(final_msg)
+
+                    if failure_reason is None:
+                        success = True
+                        current_messages = list(entry_result["messages"])
+                        break
+                    else:
+                        print(f"  Entry {i} attempt {attempt + 1} detected issue in response")
+                        if attempt < MAX_RETRIES:
+                            current_messages = list(entry_result["messages"])
+
+                except Exception as e:
+                    failure_reason = str(e)
+                    print(f"  Entry {i} attempt {attempt + 1} raised exception: {e}")
+
+            if success:
+                print(f"  Entry {i}: SUCCESS")
+                results.append({"entry": i, "data": entry, "status": "success"})
+            else:
+                print(f"  Entry {i}: FAILED")
+                results.append({"entry": i, "data": entry, "status": "failed", "reason": failure_reason})
+
+            print("-" * 70)
+
+        print("\n" + "=" * 70)
+        print("SUBMISSION SUMMARY")
         print("=" * 70)
-        final_message = result["messages"][-1]
-        print(final_message.content if hasattr(final_message, 'content') else str(final_message))
+
+        successful = [r for r in results if r["status"] == "success"]
+        failed = [r for r in results if r["status"] == "failed"]
+
+        print(f"Total entries : {len(results)}")
+        print(f"Successful : {len(successful)}")
+        print(f"Failed : {len(failed)}")
+
+        if failed:
+            print(f"\n{'─' * 70}")
+            print("FAILED ENTRIES:")
+            print(f"{'─' * 70}")
+            for r in failed:
+                fields = ', '.join(f'{k}="{v}"' for k, v in r["data"].items())
+                print(f"\n  Entry {r['entry']}: {fields}")
+                reason = r["reason"] or "Unknown error"
+                
+                if len(reason) > 300:
+                    reason = reason[:300] + "..."
+                print(f"  Reason: {reason}")
+
         print("=" * 70 + "\n")
 
         await page.wait_for_timeout(1000)
