@@ -323,10 +323,7 @@ Tasks:
 3. After logging in, read the page to understand the form structure
 4. Submit these {len(form_data)} data entries ONE AT A TIME (wait for each to complete before starting the next):
 
-{chr(10).join(entries_desc)}
-
-5. After ALL entries are submitted, look for a way to view/verify the submissions (e.g., a "View Submissions" tab or page)
-6. Read the page and report how many submissions are shown"""
+{chr(10).join(entries_desc)}"""
 
         result = await graph.ainvoke(
             {"messages": [("user", user_message)]},
