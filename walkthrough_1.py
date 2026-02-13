@@ -134,8 +134,8 @@ async def get_page_html() -> str:
                 tag_str += text
             lines.append(tag_str)
         result = '\n'.join(lines)
-        if len(result) > 4000:
-            result = result[:4000] + '\n... (truncated)'
+        if len(result) > 16000:
+            result = result[:16000] + '\n... (truncated)'
         return result
     except Exception as e:
         return f"Failed to get page HTML: {e}"
