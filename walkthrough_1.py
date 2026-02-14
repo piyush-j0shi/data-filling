@@ -328,7 +328,6 @@ async def fill_autocomplete_by_label(label_text: str, value: str) -> str:
     """
     page = get_page()
     try:
-        # Step 1: Find the correct interactive element via label text
         field_info = await page.evaluate("""(labelText) => {
             const labels = document.querySelectorAll('label');
             for (const label of labels) {
@@ -390,14 +389,12 @@ async def fill_autocomplete_by_label(label_text: str, value: str) -> str:
         selector = field_info['selector']
 
         if field_type == 'direct_input':
-            # It's a visible input — click, clear, and type directly
             await page.wait_for_selector(selector, timeout=5000, state="visible")
-            await page.click(selector, timeout=5000)
+            await page.click(selector)
             await page.fill(selector, "")
             await page.type(selector, value, delay=50)
             await page.wait_for_timeout(2000)
         else:
-            # It's a ui-select container — click to open, then find the search input
             await page.click(selector, timeout=5000)
             await page.wait_for_timeout(500)
 
@@ -502,7 +499,6 @@ async def fill_field_by_label(label_text: str, value: str) -> str:
             return f"Failed: Could not find input for label '{label_text}'"
 
         await page.wait_for_selector(input_selector, timeout=5000, state="visible")
-        # Click to focus, triple-click to select all, then type over it (works for date pickers)
         await page.click(input_selector, click_count=3)
         await page.keyboard.press("Backspace")
         await page.type(input_selector, value, delay=30)
@@ -744,18 +740,16 @@ async def run_agent():
             print(f"{'=' * 70}")
 
             financials_url = APP_URL.rstrip("/").rsplit("/ema", 1)[0] + "/ema/practice/financial/Financials.action#/home/bills"
-
-            bill_fields = {
-                "patient_name": entry.get("patient_name", ""),
-                "service_location": entry.get("service_location", ""),
-                "primary_biller": entry.get("primary_biller", ""),
-                "date_of_service": entry.get("date_of_service", ""),
-                "primary_provider": entry.get("primary_provider", ""),
-                "referring_provider": entry.get("referring_provider", ""),
-                "reportable_reason": entry.get("reportable_reason", ""),
-                "diagnoses": entry.get("diagnoses", ""),
-            }
-            bill_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in bill_fields.items() if v)
+            FORM_FIELDS = [
+                ("patient_name",        "Patient Name",        "autocomplete"),
+                ("service_location",    "Service Location",    "autocomplete"),
+                ("primary_biller",      "Primary Biller",      "autocomplete"),
+                ("date_of_service",     "Date of Service",     "date"),
+                ("primary_provider",    "Primary Provider",    "autocomplete"),
+                ("referring_provider",  "Referring Provider",  "autocomplete"),
+                ("reportable_reason",   "Reportable Reason",   "select"),
+                ("diagnoses",           "Diagnoses",           "autocomplete"),
+            ]
 
             phase3_success = False
             phase3_failure = ""
@@ -763,9 +757,9 @@ async def run_agent():
             for attempt in range(1 + MAX_RETRIES):
                 try:
                     if attempt > 0:
-                        print(f"  Retrying Fill Create Bill Modal (attempt {attempt + 1})...")
+                        print(f"  Retrying Fill Create Bill (attempt {attempt + 1})...")
                     else:
-                        print(f"Navigate to Create Bill (Entry {i})")
+                        print(f"  Navigate to Create Bill (Entry {i})")
 
                     await page.goto(financials_url, wait_until="domcontentloaded", timeout=30000)
                     await page.wait_for_timeout(2000)
@@ -777,44 +771,50 @@ async def run_agent():
                     await page.wait_for_timeout(3000)
                     print("  Clicked Patient Bill radio")
 
-                    form_html = await _extract_interactive_elements(page)
-                    print("  Captured clean form HTML snapshot")
+                    fill_failures = []
+                    for field_key, label, field_type in FORM_FIELDS:
+                        value = entry.get(field_key, "")
+                        if not value:
+                            continue
 
-                    phase3_msg = f"""Fill the Create a Bill form and submit it. The modal is already open and Patient Bill is selected.
+                        result = ""
+                        for retry in range(2):
+                            if field_type == "autocomplete":
+                                result = await fill_autocomplete_by_label.ainvoke(
+                                    {"label_text": label, "value": value}
+                                )
+                            elif field_type == "date":
+                                result = await fill_field_by_label.ainvoke(
+                                    {"label_text": label, "value": value}
+                                )
+                            elif field_type == "select":
+                                result = await select_option_by_label.ainvoke(
+                                    {"label_text": label, "value": value}
+                                )
 
-Here is the current form HTML for reference (do NOT call get_page_html during filling):
+                            print(f"    {label}: {result}")
+                            if "Failed" not in str(result):
+                                break
+                            elif retry == 0:
+                                print(f"    Retrying {label}...")
 
-{form_html}
+                        if "Failed" in str(result):
+                            fill_failures.append(f"{label}: {result}")
 
-Form data to fill:
-{bill_fields_str}
+                    if fill_failures:
+                        phase3_failure = f"Field failures: {'; '.join(fill_failures)}"
+                        print(f"Some fields failed: {fill_failures}")
+                        continue  
 
-Instructions — use LABEL-BASED tools (they find inputs automatically by label text):
-1. fill_autocomplete_by_label(label_text="Patient Name", value="<patient_name value>")
-2. fill_autocomplete_by_label(label_text="Service Location", value="<service_location value>")
-3. fill_autocomplete_by_label(label_text="Primary Biller", value="<primary_biller value>")
-4. fill_field_by_label(label_text="Date of Service", value="<date_of_service value>")
-5. fill_autocomplete_by_label(label_text="Primary Provider", value="<primary_provider value>")
-6. fill_autocomplete_by_label(label_text="Referring Provider", value="<referring_provider value>") — skip if empty
-7. select_option_by_label(label_text="Reportable Reason", value="<reportable_reason value>")
-8. fill_autocomplete_by_label(label_text="Diagnoses", value="<diagnoses value>")
-9. SKIP Medical Domain and Provider Fee Schedule — they auto-fill.
-10. Fill fields ONE AT A TIME. If any tool call fails, retry it once immediately.
-11. After filling ALL fields, click the "Create Bill" button using click_element.
-12. After clicking Create Bill, call get_page_html to confirm you are on the Manage Bill page."""
+                    try:
+                        await page.click(".modal-content button:has-text('Create Bill')", timeout=10000)
+                    except Exception:
+                        await page.click("button:has-text('Create Bill'):visible", timeout=10000)
+                    await page.wait_for_timeout(3000)
+                    print("  Clicked Create Bill")
 
-                    phase3_messages = await run_phase(
-                        graph,
-                        [("user", phase3_msg)],
-                        f"Fill Create Bill Modal (Entry {i})"
-                    )
-                    phase3_failure = _detect_failure(phase3_messages[-1])
-
-                    if phase3_failure is None:
-                        phase3_success = True
-                        break
-                    else:
-                        print(f"  Fill Create Bill attempt {attempt + 1} detected issue")
+                    phase3_success = True
+                    break
 
                 except Exception as e:
                     phase3_failure = str(e)
@@ -838,11 +838,10 @@ Instructions — use LABEL-BASED tools (they find inputs automatically by label 
                         print(f"  Retrying Fill Services Rendered (attempt {attempt + 1})...")
 
                     services_html = await _extract_interactive_elements(page)
-                    print("  Captured Manage Bill page HTML snapshot")
 
                     phase4_msg = f"""Fill the Services Rendered section on the Manage Bill page. You are already on the Manage Bill page.
 
-Here is the current page HTML (do NOT call get_page_html during filling):
+Here is the current page HTML:
 
 {services_html}
 
@@ -854,7 +853,7 @@ Service data:
 Instructions:
 1. From the HTML above, find the Services Rendered section.
 2. The Code field is an autocomplete — use type_and_select with the code value "{service_code}".
-3. Fill the Units field with "{service_units}".
+3. Fill the Units field with "{service_units}" using fill_field.
 4. Click the DX Ptr button(s) for pointer "{dx_ptrs}" (these are numbered buttons like 1, 2, 3, 4).
 5. If any tool call fails, retry it once immediately with the same selector.
 6. After filling, call get_page_html to confirm the service line is filled."""
@@ -881,47 +880,18 @@ Instructions:
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": phase4_failure})
                 continue
 
-            phase5_msg = """Save the bill and exit. You are on the Manage Bill page.
+            try:
+                print("  Saving bill...")
+                await page.click("button:has-text('Save & Exit')", timeout=10000)
+                await page.wait_for_timeout(3000)
+                print("  Clicked Save & Exit")
 
-Steps:
-1. Call get_page_html to see the current page
-2. Click the "Save" button
-3. Wait for the save to complete, then call get_page_html to confirm
-4. Click the "Save & Exit" button
-5. Confirm you are back on the bills list page"""
-
-            success = False
-            failure_reason = ""
-
-            for attempt in range(1 + MAX_RETRIES):
-                if attempt > 0:
-                    print(f"  Retrying Save & Exit (attempt {attempt + 1})...")
-
-                try:
-                    final_messages = await run_phase(
-                        graph,
-                        [("user", phase5_msg)],
-                        f"Save & Exit (Entry {i})"
-                    )
-                    final_msg = final_messages[-1]
-                    failure_reason = _detect_failure(final_msg)
-
-                    if failure_reason is None:
-                        success = True
-                        break
-                    else:
-                        print(f"  Save & Exit attempt {attempt + 1} detected issue")
-
-                except Exception as e:
-                    failure_reason = str(e)
-                    print(f"  Save & Exit attempt {attempt + 1} exception: {e}")
-
-            if success:
                 print(f"\n  Entry {i}: SUCCESS")
                 results.append({"entry": i, "data": entry, "status": "success"})
-            else:
+
+            except Exception as e:
                 print(f"\n  Entry {i}: FAILED (Save & Exit)")
-                results.append({"entry": i, "data": entry, "status": "failed", "reason": failure_reason})
+                results.append({"entry": i, "data": entry, "status": "failed", "reason": str(e)})
 
         print("\n" + "=" * 70)
         print("SUBMISSION SUMMARY")
