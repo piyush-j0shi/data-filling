@@ -633,7 +633,7 @@ def create_automation_agent():
                 f"{k}={v[:50] if isinstance(v, str) else v}"
                 for k, v in tc.get('args', {}).items()
             )
-            print(f"  Tool: {tc.get('name')}({args_str})")
+            print(f"Tool: {tc.get('name')}({args_str})")
 
         return {"messages": [response]}
 
@@ -648,7 +648,7 @@ def create_automation_agent():
                 continue
             content = msg.content if hasattr(msg, 'content') else str(msg)
             preview = content[:150] if len(content) > 150 else content
-            print(f"    -> {preview}")
+            print(f"- {preview}")
         return result
 
     workflow.add_node("agent", call_model)
@@ -678,7 +678,7 @@ def _detect_failure(message) -> str | None:
 
 async def run_phase(graph, messages, phase_name, recursion_limit=30):
     """Run a single phase of the workflow and return updated messages."""
-    print(f"  {phase_name}")
+    print(f"{phase_name}")
     print(f"{'=' * 70}")
     result = await graph.ainvoke(
         {"messages": messages},
@@ -706,7 +706,7 @@ async def run_agent():
         username = os.environ.get("LOGIN_USERNAME", "admin")
         password = os.environ.get("LOGIN_PASSWORD", "admin")
 
-        print("  Select Practice Staff")
+        print("Select Practice Staff")
         
         await page.goto(APP_URL, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(2000)
@@ -724,7 +724,7 @@ async def run_agent():
             if next_btn:
                 await next_btn.click()
                 await page.wait_for_timeout(2000)
-                print("  Dismissed survey page")
+                print("Dismissed survey page")
         except Exception:
             pass  
 
@@ -735,8 +735,8 @@ async def run_agent():
         for i, entry in enumerate(form_data, 1):
             fields = ', '.join(f'{k}="{v}"' for k, v in entry.items())
             print(f"\n{'=' * 70}")
-            print(f"  BILL ENTRY {i}/{len(form_data)}")
-            print(f"  {fields}")
+            print(f"BILL ENTRY {i}/{len(form_data)}")
+            print(f"{fields}")
             print(f"{'=' * 70}")
 
             financials_url = APP_URL.rstrip("/").rsplit("/ema", 1)[0] + "/ema/practice/financial/Financials.action#/home/bills"
@@ -757,19 +757,19 @@ async def run_agent():
             for attempt in range(1 + MAX_RETRIES):
                 try:
                     if attempt > 0:
-                        print(f"  Retrying Fill Create Bill (attempt {attempt + 1})...")
+                        print(f"Retrying Fill Create Bill (attempt {attempt + 1})...")
                     else:
-                        print(f"  Navigate to Create Bill (Entry {i})")
+                        print(f"Navigate to Create Bill (Entry {i})")
 
                     await page.goto(financials_url, wait_until="domcontentloaded", timeout=30000)
                     await page.wait_for_timeout(2000)
                     await page.click("text=Create a Bill", timeout=10000)
                     await page.wait_for_timeout(2000)
-                    print("  Create a Bill modal open")
+                    print("Create a Bill modal open")
 
                     await page.click("#patientBillTypeRadio", timeout=10000)
                     await page.wait_for_timeout(3000)
-                    print("  Clicked Patient Bill radio")
+                    print("Clicked Patient Bill radio")
 
                     fill_failures = []
                     for field_key, label, field_type in FORM_FIELDS:
@@ -792,11 +792,11 @@ async def run_agent():
                                     {"label_text": label, "value": value}
                                 )
 
-                            print(f"    {label}: {result}")
+                            print(f"{label}: {result}")
                             if "Failed" not in str(result):
                                 break
                             elif retry == 0:
-                                print(f"    Retrying {label}...")
+                                print(f"Retrying {label}...")
 
                         if "Failed" in str(result):
                             fill_failures.append(f"{label}: {result}")
@@ -811,14 +811,14 @@ async def run_agent():
                     except Exception:
                         await page.click("button:has-text('Create Bill'):visible", timeout=10000)
                     await page.wait_for_timeout(3000)
-                    print("  Clicked Create Bill")
+                    print("Clicked Create Bill")
 
                     phase3_success = True
                     break
 
                 except Exception as e:
                     phase3_failure = str(e)
-                    print(f"  Fill Create Bill attempt {attempt + 1} exception: {e}")
+                    print(f"Fill Create Bill attempt {attempt + 1} exception: {e}")
 
             if not phase3_success:
                 print(f"\n  Entry {i}: FAILED (Fill Create Bill)")
@@ -835,10 +835,10 @@ async def run_agent():
             for attempt in range(1 + MAX_RETRIES):
                 try:
                     if attempt > 0:
-                        print(f"  Retrying Fill Services Rendered (attempt {attempt + 1})...")
+                        print(f"Retrying Fill Services Rendered (attempt {attempt + 1})...")
 
                     services_html = await _extract_interactive_elements(page)
-
+                    
                     phase4_msg = f"""Fill the Services Rendered section on the Manage Bill page. You are already on the Manage Bill page.
 
 Here is the current page HTML:
@@ -869,11 +869,11 @@ Instructions:
                         phase4_success = True
                         break
                     else:
-                        print(f"  Fill Services Rendered attempt {attempt + 1} detected issue")
+                        print(f"Fill Services Rendered attempt {attempt + 1} detected issue")
 
                 except Exception as e:
                     phase4_failure = str(e)
-                    print(f"  Fill Services Rendered attempt {attempt + 1} exception: {e}")
+                    print(f"Fill Services Rendered attempt {attempt + 1} exception: {e}")
 
             if not phase4_success:
                 print(f"\n  Entry {i}: FAILED (Fill Services Rendered)")
@@ -881,10 +881,10 @@ Instructions:
                 continue
 
             try:
-                print("  Saving bill...")
+                print("Saving bill")
                 await page.click("button:has-text('Save & Exit')", timeout=10000)
                 await page.wait_for_timeout(3000)
-                print("  Clicked Save & Exit")
+                print("Clicked Save & Exit")
 
                 print(f"\n  Entry {i}: SUCCESS")
                 results.append({"entry": i, "data": entry, "status": "success"})
@@ -914,7 +914,7 @@ Instructions:
                 reason = r["reason"] or "Unknown error"
                 if len(reason) > 300:
                     reason = reason[:300] + "..."
-                print(f"  Reason: {reason}")
+                print(f"Reason: {reason}")
 
         print("=" * 70 + "\n")
 
