@@ -260,9 +260,7 @@ async def type_and_select(selector: str, text: str) -> str:
                     const style = window.getComputedStyle(el);
                     if (style.display === 'none' || style.visibility === 'hidden') continue;
                     if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
-                    // Must be inside a dropdown container, not a random page element
-                    const inDropdown = el.closest('.ui-select-choices, .dropdown-menu, [role="listbox"], .typeahead-dropdown, .autocomplete-results');
-                    if (!inDropdown) continue;
+                    if (el.closest('nav, header, footer, .navbar')) continue;
                     const text = el.textContent?.trim();
                     if (text && text.length > 2 && text.length < 300) {
                         el.click();
@@ -302,8 +300,8 @@ _CLICK_SUGGESTION_JS = """() => {
             const style = window.getComputedStyle(el);
             if (style.display === 'none' || style.visibility === 'hidden') continue;
             if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
-            const inDropdown = el.closest('.ui-select-choices, .dropdown-menu, [role="listbox"], .typeahead-dropdown, .autocomplete-results');
-            if (!inDropdown) continue;
+            // Skip elements in navigation areas (avoids clicking "Feedback" etc.)
+            if (el.closest('nav, header, footer, .navbar')) continue;
             const text = el.textContent?.trim();
             if (text && text.length > 2 && text.length < 300) {
                 el.click();
@@ -330,64 +328,100 @@ async def fill_autocomplete_by_label(label_text: str, value: str) -> str:
     """
     page = get_page()
     try:
-        container_info = await page.evaluate("""(labelText) => {
+        # Step 1: Find the correct interactive element via label text
+        field_info = await page.evaluate("""(labelText) => {
             const labels = document.querySelectorAll('label');
             for (const label of labels) {
                 if (!label.textContent.toLowerCase().includes(labelText.toLowerCase())) continue;
 
                 const forAttr = label.getAttribute('for');
+                const parent = label.closest('.form-group') || label.parentElement;
+
                 if (forAttr) {
                     const target = document.getElementById(forAttr);
                     if (target) {
-                        // Return the id so we can build a selector
-                        return { id: forAttr, tagName: target.tagName.toLowerCase() };
+                        const isHidden = target.type === 'hidden' ||
+                            window.getComputedStyle(target).display === 'none';
+
+                        // If target is a visible input, use it directly
+                        if (!isHidden && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+                            return { type: 'direct_input', selector: '#' + forAttr };
+                        }
+
+                        // If target is hidden or a container, look for a visible input nearby
+                        if (isHidden && parent) {
+                            // Search the parent container for a visible text/search input
+                            const inputs = parent.querySelectorAll('input:not([type="hidden"])');
+                            for (const inp of inputs) {
+                                const style = window.getComputedStyle(inp);
+                                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                                if (inp.offsetWidth === 0 && inp.offsetHeight === 0) continue;
+                                if (inp.id) return { type: 'direct_input', selector: '#' + inp.id };
+                                if (inp.placeholder) return { type: 'direct_input', selector: 'input[placeholder="' + inp.placeholder + '"]' };
+                            }
+                        }
+
+                        // Target is a ui-select container or similar
+                        if (!isHidden) {
+                            return { type: 'ui_select', selector: '#' + forAttr };
+                        }
                     }
                 }
 
-                // Fallback: look for input near the label
-                const parent = label.closest('.form-group') || label.parentElement;
+                // Fallback: look for any visible input near the label
                 if (parent) {
-                    const input = parent.querySelector('input:not([type="hidden"])');
-                    if (input && input.id) {
-                        return { id: input.id, tagName: 'input' };
+                    const inputs = parent.querySelectorAll('input:not([type="hidden"])');
+                    for (const inp of inputs) {
+                        const style = window.getComputedStyle(inp);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        if (inp.offsetWidth === 0 && inp.offsetHeight === 0) continue;
+                        if (inp.id) return { type: 'direct_input', selector: '#' + inp.id };
+                        if (inp.placeholder) return { type: 'direct_input', selector: 'input[placeholder="' + inp.placeholder + '"]' };
                     }
                 }
             }
             return null;
         }""", label_text)
 
-        if not container_info:
+        if not field_info:
             return f"Failed: Could not find field with label '{label_text}'"
 
-        target_id = container_info['id']
+        field_type = field_info['type']
+        selector = field_info['selector']
 
-        await page.click(f"#{target_id}", timeout=5000)
-        await page.wait_for_timeout(500)
+        if field_type == 'direct_input':
+            # It's a visible input — click, clear, and type directly
+            await page.wait_for_selector(selector, timeout=5000, state="visible")
+            await page.click(selector, timeout=5000)
+            await page.fill(selector, "")
+            await page.type(selector, value, delay=50)
+            await page.wait_for_timeout(2000)
+        else:
+            # It's a ui-select container — click to open, then find the search input
+            await page.click(selector, timeout=5000)
+            await page.wait_for_timeout(500)
 
-        search_selectors = [
-            f"#{target_id} input.ui-select-search",
-            f"#{target_id} input[type='search']",
-            f"#{target_id} input:not([type='hidden']):not(.ui-select-focusser)",
-        ]
+            search_selectors = [
+                f"{selector} input.ui-select-search",
+                f"{selector} input[type='search']",
+                f"{selector} input:not([type='hidden']):not(.ui-select-focusser)",
+            ]
 
-        search_input = None
-        for sel in search_selectors:
-            try:
-                search_input = await page.wait_for_selector(sel, timeout=2000, state="visible")
-                if search_input:
-                    break
-            except Exception:
-                continue
+            search_input = None
+            for sel in search_selectors:
+                try:
+                    search_input = await page.wait_for_selector(sel, timeout=2000, state="visible")
+                    if search_input:
+                        break
+                except Exception:
+                    continue
 
-        if not search_input:
-            if container_info['tagName'] == 'input':
-                search_input = await page.wait_for_selector(f"#{target_id}", timeout=2000, state="visible")
-            else:
-                return f"Failed: Could not find search input for '{label_text}' (container: #{target_id})"
+            if not search_input:
+                return f"Failed: Could not find search input for '{label_text}' (container: {selector})"
 
-        await search_input.fill("")
-        await search_input.type(value, delay=50)
-        await page.wait_for_timeout(2000)
+            await search_input.fill("")
+            await search_input.type(value, delay=50)
+            await page.wait_for_timeout(2000)
 
         clicked = await page.evaluate(_CLICK_SUGGESTION_JS)
 
@@ -412,40 +446,66 @@ async def fill_field_by_label(label_text: str, value: str) -> str:
     """
     page = get_page()
     try:
-        input_id = await page.evaluate("""(labelText) => {
+        input_selector = await page.evaluate("""(labelText) => {
             const labels = document.querySelectorAll('label');
             for (const label of labels) {
                 if (!label.textContent.toLowerCase().includes(labelText.toLowerCase())) continue;
 
                 const forAttr = label.getAttribute('for');
+                const parent = label.closest('.form-group') || label.parentElement;
+
                 if (forAttr) {
                     const target = document.getElementById(forAttr);
                     if (target) {
-                        // If target is an input, use it directly
-                        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-                            return forAttr;
+                        const isHidden = target.type === 'hidden' ||
+                            window.getComputedStyle(target).display === 'none';
+
+                        // If target is a visible input, use it
+                        if (!isHidden && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+                            return '#' + forAttr;
                         }
-                        // Otherwise find input inside
-                        const input = target.querySelector('input:not([type="hidden"])');
-                        if (input && input.id) return input.id;
+                        // If hidden, find visible input nearby
+                        if (parent) {
+                            const inputs = parent.querySelectorAll('input:not([type="hidden"])');
+                            for (const inp of inputs) {
+                                const style = window.getComputedStyle(inp);
+                                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                                if (inp.offsetWidth === 0 && inp.offsetHeight === 0) continue;
+                                if (inp.id) return '#' + inp.id;
+                                if (inp.placeholder) return 'input[placeholder="' + inp.placeholder + '"]';
+                            }
+                        }
+                        // If target is a container, find input inside
+                        if (!isHidden) {
+                            const input = target.querySelector('input:not([type="hidden"])');
+                            if (input && input.id) return '#' + input.id;
+                        }
                     }
                 }
 
                 // Fallback: look for input near the label
-                const parent = label.closest('.form-group') || label.parentElement;
                 if (parent) {
-                    const input = parent.querySelector('input:not([type="hidden"])');
-                    if (input && input.id) return input.id;
+                    const inputs = parent.querySelectorAll('input:not([type="hidden"])');
+                    for (const inp of inputs) {
+                        const style = window.getComputedStyle(inp);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        if (inp.offsetWidth === 0 && inp.offsetHeight === 0) continue;
+                        if (inp.id) return '#' + inp.id;
+                        if (inp.placeholder) return 'input[placeholder="' + inp.placeholder + '"]';
+                    }
                 }
             }
             return null;
         }""", label_text)
 
-        if not input_id:
+        if not input_selector:
             return f"Failed: Could not find input for label '{label_text}'"
 
-        await page.wait_for_selector(f"#{input_id}", timeout=5000, state="visible")
-        await page.fill(f"#{input_id}", value, timeout=5000)
+        await page.wait_for_selector(input_selector, timeout=5000, state="visible")
+        # Click to focus, triple-click to select all, then type over it (works for date pickers)
+        await page.click(input_selector, click_count=3)
+        await page.keyboard.press("Backspace")
+        await page.type(input_selector, value, delay=30)
         await page.wait_for_timeout(200)
         return f"Filled '{label_text}' with '{value}'"
 
@@ -714,7 +774,7 @@ async def run_agent():
                     print("  Create a Bill modal open")
 
                     await page.click("#patientBillTypeRadio", timeout=10000)
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(3000)
                     print("  Clicked Patient Bill radio")
 
                     form_html = await _extract_interactive_elements(page)
