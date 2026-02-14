@@ -36,44 +36,9 @@ def get_page() -> Page:
         raise RuntimeError("Browser session not active. Call set_page first.")
     return _page_holder["page"]
 
-@asynccontextmanager
-async def get_bedrock_browser():
-    """Starts an AWS Bedrock browser session and connects via CDP with custom headers."""
-    with browser_session(AWS_REGION, identifier=BROWSER_ID) as client:
-        ws_url, headers = client.generate_ws_headers()
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.connect_over_cdp(ws_url, headers=headers)
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
-
-            await context.set_extra_http_headers({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "ngrok-skip-browser-warning": "true"
-            })
-
-            page = context.pages[0] if context.pages else await context.new_page()
-            try:
-                yield page
-            finally:
-                await page.close()
-                await browser.close()
-
-
-@tool
-async def navigate_to_url(url: str) -> str:
-    """Navigate the browser to a URL."""
-    page = get_page()
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(2000)
-        return "Done"
-    except Exception as e:
-        return f"Failed: {e}"
-
-@tool
-async def get_page_html() -> str:
-    """Returns visible interactive elements on the current page."""
-    page = get_page()
+async def _extract_interactive_elements(page: Page) -> str:
+    """Extract visible interactive elements from page as formatted HTML string."""
     try:
         elements = await page.evaluate("""() => {
             const results = [];
@@ -89,6 +54,11 @@ async def get_page_html() -> str:
                            'contenteditable', 'action', 'method'];
 
             for (const el of document.querySelectorAll(combined)) {
+                // Skip Angular ui-select focusser elements (noise that confuses selector matching)
+                if (el.id && /^focusser-\\d+$/.test(el.id)) continue;
+                // Skip ui-select search inputs that appear dynamically
+                if (el.classList && el.classList.contains('ui-select-search') && el.offsetHeight === 0) continue;
+
                 const style = window.getComputedStyle(el);
                 if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
                 if (el.offsetWidth === 0 && el.offsetHeight === 0 && el.tagName !== 'INPUT' && el.tagName !== 'OPTION') continue;
@@ -134,6 +104,47 @@ async def get_page_html() -> str:
         return result
     except Exception as e:
         return f"Failed to get page HTML: {e}"
+
+
+@asynccontextmanager
+async def get_bedrock_browser():
+    """Starts an AWS Bedrock browser session and connects via CDP with custom headers."""
+    with browser_session(AWS_REGION, identifier=BROWSER_ID) as client:
+        ws_url, headers = client.generate_ws_headers()
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.connect_over_cdp(ws_url, headers=headers)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+
+            await context.set_extra_http_headers({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "ngrok-skip-browser-warning": "true"
+            })
+
+            page = context.pages[0] if context.pages else await context.new_page()
+            try:
+                yield page
+            finally:
+                await page.close()
+                await browser.close()
+
+
+@tool
+async def navigate_to_url(url: str) -> str:
+    """Navigate the browser to a URL."""
+    page = get_page()
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(2000)
+        return "Done"
+    except Exception as e:
+        return f"Failed: {e}"
+
+@tool
+async def get_page_html() -> str:
+    """Returns visible interactive elements on the current page."""
+    page = get_page()
+    return await _extract_interactive_elements(page)
 
 @tool
 async def get_page_text() -> str:
@@ -228,10 +239,11 @@ async def type_and_select(selector: str, text: str) -> str:
         await page.wait_for_timeout(2000)
 
         clicked = await page.evaluate("""() => {
-            // Strategy 1: Look for common dropdown/suggestion containers
+            // Only look inside known dropdown/suggestion containers — never scan the whole page
             const dropdownSelectors = [
                 '.ui-select-choices-row',
                 '.ui-select-choices-row-inner',
+                '.dropdown-menu li a',
                 '.dropdown-menu li',
                 '.autocomplete-suggestion',
                 '.typeahead-result',
@@ -248,50 +260,14 @@ async def type_and_select(selector: str, text: str) -> str:
                     const style = window.getComputedStyle(el);
                     if (style.display === 'none' || style.visibility === 'hidden') continue;
                     if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
+                    // Must be inside a dropdown container, not a random page element
+                    const inDropdown = el.closest('.ui-select-choices, .dropdown-menu, [role="listbox"], .typeahead-dropdown, .autocomplete-results');
+                    if (!inDropdown) continue;
                     const text = el.textContent?.trim();
-                    if (text && text.length > 2) {
+                    if (text && text.length > 2 && text.length < 300) {
                         el.click();
                         return text;
                     }
-                }
-            }
-
-            // Strategy 2: Find any visible element with cursor:pointer near an open dropdown
-            const all = document.querySelectorAll('li, a, div, span');
-            for (const el of all) {
-                const style = window.getComputedStyle(el);
-                if (style.display === 'none' || style.visibility === 'hidden') continue;
-                if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
-
-                const tag = el.tagName.toLowerCase();
-                const role = el.getAttribute('role') || '';
-                const cursor = style.cursor;
-                const parent = el.parentElement;
-                const parentClass = parent ? parent.className : '';
-
-                const isDropdownItem = (
-                    role === 'option' || role === 'menuitem' ||
-                    (tag === 'li' && cursor === 'pointer') ||
-                    (tag === 'a' && el.closest('ul')) ||
-                    (cursor === 'pointer' && (
-                        parentClass.includes('select') ||
-                        parentClass.includes('dropdown') ||
-                        parentClass.includes('autocomplete') ||
-                        parentClass.includes('typeahead') ||
-                        parentClass.includes('suggestion') ||
-                        parentClass.includes('choices')
-                    )) ||
-                    el.closest('[role="listbox"]') !== null ||
-                    el.closest('[role="menu"]') !== null ||
-                    el.closest('.ui-select-choices') !== null
-                );
-
-                if (!isDropdownItem) continue;
-
-                const text = el.textContent?.trim();
-                if (text && text.length > 2 && text.length < 300) {
-                    el.click();
-                    return text;
                 }
             }
             return null;
@@ -306,31 +282,250 @@ async def type_and_select(selector: str, text: str) -> str:
     except Exception as e:
         return f"Failed: {e}"
 
+_CLICK_SUGGESTION_JS = """() => {
+    const dropdownSelectors = [
+        '.ui-select-choices-row',
+        '.ui-select-choices-row-inner',
+        '.dropdown-menu li a',
+        '.dropdown-menu li',
+        '.autocomplete-suggestion',
+        '.typeahead-result',
+        'ul.ui-select-choices li',
+        '[role="option"]',
+        '.ui-menu-item',
+        '.search-result-item',
+        '.suggestion-item'
+    ];
+    for (const sel of dropdownSelectors) {
+        const items = document.querySelectorAll(sel);
+        for (const el of items) {
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
+            const inDropdown = el.closest('.ui-select-choices, .dropdown-menu, [role="listbox"], .typeahead-dropdown, .autocomplete-results');
+            if (!inDropdown) continue;
+            const text = el.textContent?.trim();
+            if (text && text.length > 2 && text.length < 300) {
+                el.click();
+                return text;
+            }
+        }
+    }
+    return null;
+}"""
+
+
+@tool
+async def fill_autocomplete_by_label(label_text: str, value: str) -> str:
+    """Fill an autocomplete/ui-select field by its visible LABEL TEXT, not by CSS selector.
+    Use this for Angular ui-select fields: Service Location, Primary Biller,
+    Primary Provider, Referring Provider, Diagnoses, and any other autocomplete/search field.
+
+    This tool handles the complex ui-select DOM internally — just provide the label text exactly
+    as it appears on the form (e.g. "Service Location", "Primary Provider").
+
+    Args:
+        label_text: The visible label text on the form (e.g. "Service Location", "Primary Biller")
+        value: The value to type and select from suggestions
+    """
+    page = get_page()
+    try:
+        container_info = await page.evaluate("""(labelText) => {
+            const labels = document.querySelectorAll('label');
+            for (const label of labels) {
+                if (!label.textContent.toLowerCase().includes(labelText.toLowerCase())) continue;
+
+                const forAttr = label.getAttribute('for');
+                if (forAttr) {
+                    const target = document.getElementById(forAttr);
+                    if (target) {
+                        // Return the id so we can build a selector
+                        return { id: forAttr, tagName: target.tagName.toLowerCase() };
+                    }
+                }
+
+                // Fallback: look for input near the label
+                const parent = label.closest('.form-group') || label.parentElement;
+                if (parent) {
+                    const input = parent.querySelector('input:not([type="hidden"])');
+                    if (input && input.id) {
+                        return { id: input.id, tagName: 'input' };
+                    }
+                }
+            }
+            return null;
+        }""", label_text)
+
+        if not container_info:
+            return f"Failed: Could not find field with label '{label_text}'"
+
+        target_id = container_info['id']
+
+        await page.click(f"#{target_id}", timeout=5000)
+        await page.wait_for_timeout(500)
+
+        search_selectors = [
+            f"#{target_id} input.ui-select-search",
+            f"#{target_id} input[type='search']",
+            f"#{target_id} input:not([type='hidden']):not(.ui-select-focusser)",
+        ]
+
+        search_input = None
+        for sel in search_selectors:
+            try:
+                search_input = await page.wait_for_selector(sel, timeout=2000, state="visible")
+                if search_input:
+                    break
+            except Exception:
+                continue
+
+        if not search_input:
+            if container_info['tagName'] == 'input':
+                search_input = await page.wait_for_selector(f"#{target_id}", timeout=2000, state="visible")
+            else:
+                return f"Failed: Could not find search input for '{label_text}' (container: #{target_id})"
+
+        await search_input.fill("")
+        await search_input.type(value, delay=50)
+        await page.wait_for_timeout(2000)
+
+        clicked = await page.evaluate(_CLICK_SUGGESTION_JS)
+
+        if clicked:
+            await page.wait_for_timeout(1000)
+            return f"Selected: {clicked}"
+        else:
+            return f"No suggestion appeared after typing '{value}' for '{label_text}'"
+
+    except Exception as e:
+        return f"Failed: {e}"
+
+
+@tool
+async def fill_field_by_label(label_text: str, value: str) -> str:
+    """Fill a simple text/date input field by its visible LABEL TEXT, not by CSS selector.
+    Use this for non-autocomplete fields like Date of Service.
+
+    Args:
+        label_text: The visible label text on the form (e.g. "Date of Service")
+        value: The value to fill in
+    """
+    page = get_page()
+    try:
+        input_id = await page.evaluate("""(labelText) => {
+            const labels = document.querySelectorAll('label');
+            for (const label of labels) {
+                if (!label.textContent.toLowerCase().includes(labelText.toLowerCase())) continue;
+
+                const forAttr = label.getAttribute('for');
+                if (forAttr) {
+                    const target = document.getElementById(forAttr);
+                    if (target) {
+                        // If target is an input, use it directly
+                        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+                            return forAttr;
+                        }
+                        // Otherwise find input inside
+                        const input = target.querySelector('input:not([type="hidden"])');
+                        if (input && input.id) return input.id;
+                    }
+                }
+
+                // Fallback: look for input near the label
+                const parent = label.closest('.form-group') || label.parentElement;
+                if (parent) {
+                    const input = parent.querySelector('input:not([type="hidden"])');
+                    if (input && input.id) return input.id;
+                }
+            }
+            return null;
+        }""", label_text)
+
+        if not input_id:
+            return f"Failed: Could not find input for label '{label_text}'"
+
+        await page.wait_for_selector(f"#{input_id}", timeout=5000, state="visible")
+        await page.fill(f"#{input_id}", value, timeout=5000)
+        await page.wait_for_timeout(200)
+        return f"Filled '{label_text}' with '{value}'"
+
+    except Exception as e:
+        return f"Failed: {e}"
+
+
+@tool
+async def select_option_by_label(label_text: str, value: str) -> str:
+    """Select a dropdown option by its visible LABEL TEXT, not by CSS selector.
+    Use this for native <select> dropdowns like Reportable Reason.
+
+    Args:
+        label_text: The visible label text on the form (e.g. "Reportable Reason")
+        value: The option value or label to select
+    """
+    page = get_page()
+    try:
+        select_id = await page.evaluate("""(labelText) => {
+            const labels = document.querySelectorAll('label');
+            for (const label of labels) {
+                if (!label.textContent.toLowerCase().includes(labelText.toLowerCase())) continue;
+
+                const forAttr = label.getAttribute('for');
+                if (forAttr) {
+                    const target = document.getElementById(forAttr);
+                    if (target && target.tagName === 'SELECT') return forAttr;
+                    if (target) {
+                        const sel = target.querySelector('select');
+                        if (sel && sel.id) return sel.id;
+                    }
+                }
+
+                const parent = label.closest('.form-group') || label.parentElement;
+                if (parent) {
+                    const sel = parent.querySelector('select');
+                    if (sel && sel.id) return sel.id;
+                }
+            }
+            return null;
+        }""", label_text)
+
+        if not select_id:
+            return f"Failed: Could not find select for label '{label_text}'"
+
+        selector = f"#{select_id}"
+        await page.wait_for_selector(selector, timeout=5000, state="visible")
+        try:
+            await page.select_option(selector, value=value, timeout=3000)
+        except Exception:
+            await page.select_option(selector, label=value, timeout=3000)
+        await page.wait_for_timeout(200)
+        return f"Selected '{value}' for '{label_text}'"
+
+    except Exception as e:
+        return f"Failed: {e}"
+
+
 SYSTEM_PROMPT = """You are a browser automation agent for a ModMed EMA medical billing application.
 
 RULES:
-1. ALWAYS call get_page_html first to discover the page structure before interacting with any elements.
-2. NEVER guess CSS selectors. Only use selectors you found from get_page_html.
-3. Build selectors from id, name, data-testid, or role attributes. Prefer #id or [name="x"] over class-based selectors.
-4. Map data fields to form fields by meaning, not exact name match.
-5. Fill form fields ONE AT A TIME. Wait for each to complete before the next.
-6. After clicking submit or navigating, call get_page_html again to see the updated page.
-7. Elements marked disabled="true" or readonly="true" cannot be interacted with — skip them.
+1. When form HTML is PROVIDED in the user message, use it to understand the page structure. Do NOT call get_page_html during form filling — the DOM mutates after each interaction.
+2. Fill form fields ONE AT A TIME. Wait for each to complete before the next.
+3. RETRY ON FAILURE: If a tool call returns "Failed" or an error, IMMEDIATELY retry the same tool call once before moving to the next field.
+4. After clicking submit or navigating to a NEW page, you MAY call get_page_html to see the new page.
+5. Elements marked disabled="true" or readonly="true" cannot be interacted with — skip them.
 
-AUTOCOMPLETE FIELDS:
-- For search/autocomplete fields (Patient Name, Primary Biller, Primary Provider, Referring Provider, Diagnoses, Service Code), use type_and_select instead of fill_field.
-- type_and_select types the full value character-by-character to trigger suggestions, then clicks the first suggestion.
-- Do NOT use fill_field for autocomplete fields — it won't trigger the dropdown.
+FORM FILLING — USE LABEL-BASED TOOLS:
+- For autocomplete/search fields (Patient Name, Service Location, Primary Biller, Primary Provider, Referring Provider, Diagnoses, Service Code), use fill_autocomplete_by_label with the LABEL TEXT as shown on the form.
+  Example: fill_autocomplete_by_label(label_text="Service Location", value="Beavercreek")
+  Example: fill_autocomplete_by_label(label_text="Primary Provider", value="Bakos, Matthew, MD")
+- For date and text inputs (Date of Service), use fill_field_by_label with the LABEL TEXT.
+  Example: fill_field_by_label(label_text="Date of Service", value="02/13/26")
+- For native <select> dropdowns (Reportable Reason), use select_option_by_label with the LABEL TEXT.
+  Example: select_option_by_label(label_text="Reportable Reason", value="Medical Non-emergency")
+- For buttons and radio buttons, use click_element with the CSS selector from the provided HTML.
+- ONLY use type_and_select or fill_field with CSS selectors when label-based tools are not applicable (e.g., Services Rendered section where fields may not have labels).
 
-RADIO BUTTONS:
-- To select a radio button, use click_element on the radio input element or its label.
-
-DROPDOWNS:
-- For native <select> elements (like Reportable Reason), use select_option.
-- For Angular ui-select components, use type_and_select.
-
-MEDICAL DOMAIN:
-- Skip the Medical Domain field — it auto-fills when Primary Provider is selected.
+MEDICAL DOMAIN & PROVIDER FEE SCHEDULE:
+- Skip Medical Domain and Provider Fee Schedule fields — they auto-fill when Primary Provider is selected.
 
 MODAL FORMS:
 - The Create a Bill form is inside a modal (div.modal-content.printable-container). Selectors still work on the full page DOM."""
@@ -349,6 +544,9 @@ def create_automation_agent():
         get_page_html,
         get_page_text,
         fill_field,
+        fill_field_by_label,
+        fill_autocomplete_by_label,
+        select_option_by_label,
         click_element,
         select_option,
         press_key,
@@ -384,8 +582,6 @@ def create_automation_agent():
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
-
-    # Tools whose results are too large to print (page reads)
     _quiet_tools = {"get_page_html", "get_page_text"}
 
     async def call_tools(state):
@@ -487,14 +683,7 @@ async def run_agent():
             print(f"  {fields}")
             print(f"{'=' * 70}")
 
-            print(f"Navigate to Create Bill (Entry {i})")
-            
             financials_url = APP_URL.rstrip("/").rsplit("/ema", 1)[0] + "/ema/practice/financial/Financials.action#/home/bills"
-            await page.goto(financials_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)
-            await page.click("text=Create a Bill", timeout=10000)
-            await page.wait_for_timeout(2000)
-            print("Create a Bill modal open")
 
             bill_fields = {
                 "patient_name": entry.get("patient_name", ""),
@@ -508,50 +697,129 @@ async def run_agent():
             }
             bill_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in bill_fields.items() if v)
 
-            phase3_msg = f"""Fill the Create a Bill form and submit it. The modal is already open.
+            phase3_success = False
+            phase3_failure = ""
 
-Form data:
+            for attempt in range(1 + MAX_RETRIES):
+                try:
+                    if attempt > 0:
+                        print(f"  Retrying Fill Create Bill Modal (attempt {attempt + 1})...")
+                    else:
+                        print(f"Navigate to Create Bill (Entry {i})")
+
+                    await page.goto(financials_url, wait_until="domcontentloaded", timeout=30000)
+                    await page.wait_for_timeout(2000)
+                    await page.click("text=Create a Bill", timeout=10000)
+                    await page.wait_for_timeout(2000)
+                    print("  Create a Bill modal open")
+
+                    await page.click("#patientBillTypeRadio", timeout=10000)
+                    await page.wait_for_timeout(1000)
+                    print("  Clicked Patient Bill radio")
+
+                    form_html = await _extract_interactive_elements(page)
+                    print("  Captured clean form HTML snapshot")
+
+                    phase3_msg = f"""Fill the Create a Bill form and submit it. The modal is already open and Patient Bill is selected.
+
+Here is the current form HTML for reference (do NOT call get_page_html during filling):
+
+{form_html}
+
+Form data to fill:
 {bill_fields_str}
 
-Steps:
-1. Call get_page_html to see the modal form
-2. FIRST: Click the "Patient Bill" radio button (the form defaults to Claim Bill, we need Patient Bill)
-3. For autocomplete fields (patient_name, service_location, primary_biller, primary_provider, referring_provider, diagnoses), use type_and_select with the FULL value provided above
-4. For date_of_service, use fill_field on the date input
-5. For reportable_reason, use select_option on the dropdown
-6. SKIP Medical Domain — it auto-fills when Primary Provider is selected
-7. After filling all fields, click the "Create Bill" button
-8. Confirm the form was submitted by reading the page — you should be redirected to a Manage Bill page"""
+Instructions — use LABEL-BASED tools (they find inputs automatically by label text):
+1. fill_autocomplete_by_label(label_text="Patient Name", value="<patient_name value>")
+2. fill_autocomplete_by_label(label_text="Service Location", value="<service_location value>")
+3. fill_autocomplete_by_label(label_text="Primary Biller", value="<primary_biller value>")
+4. fill_field_by_label(label_text="Date of Service", value="<date_of_service value>")
+5. fill_autocomplete_by_label(label_text="Primary Provider", value="<primary_provider value>")
+6. fill_autocomplete_by_label(label_text="Referring Provider", value="<referring_provider value>") — skip if empty
+7. select_option_by_label(label_text="Reportable Reason", value="<reportable_reason value>")
+8. fill_autocomplete_by_label(label_text="Diagnoses", value="<diagnoses value>")
+9. SKIP Medical Domain and Provider Fee Schedule — they auto-fill.
+10. Fill fields ONE AT A TIME. If any tool call fails, retry it once immediately.
+11. After filling ALL fields, click the "Create Bill" button using click_element.
+12. After clicking Create Bill, call get_page_html to confirm you are on the Manage Bill page."""
 
-            await run_phase(
-                graph,
-                [("user", phase3_msg)],
-                f"Fill Create Bill Modal (Entry {i})"
-            )
+                    phase3_messages = await run_phase(
+                        graph,
+                        [("user", phase3_msg)],
+                        f"Fill Create Bill Modal (Entry {i})"
+                    )
+                    phase3_failure = _detect_failure(phase3_messages[-1])
+
+                    if phase3_failure is None:
+                        phase3_success = True
+                        break
+                    else:
+                        print(f"  Fill Create Bill attempt {attempt + 1} detected issue")
+
+                except Exception as e:
+                    phase3_failure = str(e)
+                    print(f"  Fill Create Bill attempt {attempt + 1} exception: {e}")
+
+            if not phase3_success:
+                print(f"\n  Entry {i}: FAILED (Fill Create Bill)")
+                results.append({"entry": i, "data": entry, "status": "failed", "reason": phase3_failure})
+                continue
 
             service_code = entry.get("service_code", "")
             service_units = entry.get("service_units", "1")
             dx_ptrs = entry.get("dx_ptrs", "1")
 
-            phase4_msg = f"""Fill the Services Rendered section on the Manage Bill page. You are already on the Manage Bill page.
+            phase4_success = False
+            phase4_failure = ""
+
+            for attempt in range(1 + MAX_RETRIES):
+                try:
+                    if attempt > 0:
+                        print(f"  Retrying Fill Services Rendered (attempt {attempt + 1})...")
+
+                    services_html = await _extract_interactive_elements(page)
+                    print("  Captured Manage Bill page HTML snapshot")
+
+                    phase4_msg = f"""Fill the Services Rendered section on the Manage Bill page. You are already on the Manage Bill page.
+
+Here is the current page HTML (do NOT call get_page_html during filling):
+
+{services_html}
 
 Service data:
   - Code: "{service_code}"
   - Units: "{service_units}"
   - DX Ptrs: "{dx_ptrs}"
 
-Steps:
-1. Call get_page_html to see the Manage Bill page and find the Services Rendered section
-2. The Code field is an autocomplete — use type_and_select with the code value "{service_code}"
-3. Fill the Units field with "{service_units}"
-4. Click the DX Ptr button(s) for pointer "{dx_ptrs}" (these are numbered buttons like 1, 2, 3, 4)
-5. Confirm the service line is filled by reading the page"""
+Instructions:
+1. From the HTML above, find the Services Rendered section.
+2. The Code field is an autocomplete — use type_and_select with the code value "{service_code}".
+3. Fill the Units field with "{service_units}".
+4. Click the DX Ptr button(s) for pointer "{dx_ptrs}" (these are numbered buttons like 1, 2, 3, 4).
+5. If any tool call fails, retry it once immediately with the same selector.
+6. After filling, call get_page_html to confirm the service line is filled."""
 
-            await run_phase(
-                graph,
-                [("user", phase4_msg)],
-                f"Fill Services Rendered (Entry {i})"
-            )
+                    phase4_messages = await run_phase(
+                        graph,
+                        [("user", phase4_msg)],
+                        f"Fill Services Rendered (Entry {i})"
+                    )
+                    phase4_failure = _detect_failure(phase4_messages[-1])
+
+                    if phase4_failure is None:
+                        phase4_success = True
+                        break
+                    else:
+                        print(f"  Fill Services Rendered attempt {attempt + 1} detected issue")
+
+                except Exception as e:
+                    phase4_failure = str(e)
+                    print(f"  Fill Services Rendered attempt {attempt + 1} exception: {e}")
+
+            if not phase4_success:
+                print(f"\n  Entry {i}: FAILED (Fill Services Rendered)")
+                results.append({"entry": i, "data": entry, "status": "failed", "reason": phase4_failure})
+                continue
 
             phase5_msg = """Save the bill and exit. You are on the Manage Bill page.
 
@@ -567,7 +835,7 @@ Steps:
 
             for attempt in range(1 + MAX_RETRIES):
                 if attempt > 0:
-                    print(f"  Retrying entry {i} (attempt {attempt + 1})...")
+                    print(f"  Retrying Save & Exit (attempt {attempt + 1})...")
 
                 try:
                     final_messages = await run_phase(
@@ -582,17 +850,17 @@ Steps:
                         success = True
                         break
                     else:
-                        print(f"  Entry {i} attempt {attempt + 1} detected issue")
+                        print(f"  Save & Exit attempt {attempt + 1} detected issue")
 
                 except Exception as e:
                     failure_reason = str(e)
-                    print(f"  Entry {i} attempt {attempt + 1} exception: {e}")
+                    print(f"  Save & Exit attempt {attempt + 1} exception: {e}")
 
             if success:
                 print(f"\n  Entry {i}: SUCCESS")
                 results.append({"entry": i, "data": entry, "status": "success"})
             else:
-                print(f"\n  Entry {i}: FAILED")
+                print(f"\n  Entry {i}: FAILED (Save & Exit)")
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure_reason})
 
         print("\n" + "=" * 70)
