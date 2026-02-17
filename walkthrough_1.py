@@ -25,22 +25,20 @@ LOGIN_PASSWORD = os.environ.get("LOGIN_PASSWORD", "admin")
 
 
 def get_llm():
-    # --- Option 1: Groq (active) ---
-    # Groq exposes an OpenAI-compatible API, so browser-use's built-in ChatOpenAI works directly.
     return BrowserUseChatOpenAI(
         model="llama-3.3-70b-versatile",
         api_key=os.environ["GROQ_API_KEY"],
         base_url="https://api.groq.com/openai/v1",
+        dont_force_structured_output=True,
+        add_schema_to_system_prompt=True,
     )
 
-    # --- Option 2: OpenRouter ---
     # return BrowserUseChatOpenAI(
     #     model="openai/gpt-4o-mini",
     #     api_key=os.environ["OPENROUTER_API_KEY"],
     #     base_url="https://openrouter.ai/api/v1",
     # )
-
-    # --- Option 3: OpenAI direct ---
+ 
     # return BrowserUseChatOpenAI(
     #     model="gpt-4o-mini",
     #     api_key=os.environ["OPENAI_API_KEY"],
@@ -99,6 +97,7 @@ async def run_browser_task(browser_session: BrowserSession, llm, task: str, task
             llm=llm,
             browser_session=browser_session,
             max_steps=max_steps,
+            use_vision = False
         )
 
         result = await agent.run()
