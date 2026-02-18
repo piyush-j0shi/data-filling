@@ -11,18 +11,5 @@
     "diagnoses": "008",
     "service_code": "00100",
     "service_units": "5"
-  },
-  {
-    "bill_type": "Patient",
-    "patient_name": "Test, Test3 [DOB:01/01/1973]",
-    "service_location": "Beavercreek",
-    "primary_biller": "Bakos, Matthew",
-    "date_of_service": "02/13/2026",
-    "primary_provider": "Bakos, Matthew, MD",
-    "referring_provider": "TEST, TEST",
-    "reportable_reason": "Medical Non-emergency",
-    "diagnoses": "008",
-    "service_code": "00100",
-    "service_units": "5"
   }
 ]

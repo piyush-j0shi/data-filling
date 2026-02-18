@@ -25,9 +25,11 @@ AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
 MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "groq")
 
-# Keys that belong to the Services Rendered phase.
-# Everything else in form_data (except "bill_type") goes to the bill fields phase.
-# Add new service-level field names here as needed.
+if "your-public-ngrok-url" in APP_URL:
+    raise ValueError("APP_URL is not configured. Set the APP_URL environment variable.")
+if "your-bedrock-browser-id" in BROWSER_ID:
+    raise ValueError("BROWSER_ID is not configured. Set the BROWSER_ID environment variable.")
+
 SERVICE_FIELD_KEYS = {
     "service_code", "service_units", "dx_ptrs",
     "modifier_1", "modifier_2", "modifier_3", "modifier_4",
@@ -112,11 +114,9 @@ async def fill_field(selector: str, value: str) -> str:
     """Fill a plain input/textarea field by CSS selector."""
     page = get_page()
     try:
-        # Wait for the element to be in the DOM (attached), then scroll it
-        # into view before filling — handles off-screen AngularJS inputs.
-        await page.wait_for_selector(selector, timeout=5000, state="attached")
+        await page.wait_for_selector(selector, timeout=10000, state="visible")
         await page.locator(selector).scroll_into_view_if_needed(timeout=3000)
-        await page.fill(selector, value, timeout=5000)
+        await page.fill(selector, value, timeout=10000)
         await page.wait_for_timeout(200)
         return f"Filled {selector} with '{value}'"
     except Exception as e:
@@ -262,7 +262,6 @@ async def fill_dx_pointers(dx_ptrs: str) -> str:
         results = []
 
         for idx, val in enumerate(values):
-            # Click the Nth dx-pointer container toggle via JS (no IDs available)
             status = await page.evaluate("""([idx]) => {
                 const containers = document.querySelectorAll(
                     '.ui-select-container[ng-model="diagnosisPointerSelectorCtrl.dxPointer"]'
@@ -282,7 +281,6 @@ async def fill_dx_pointers(dx_ptrs: str) -> str:
 
             await page.wait_for_timeout(700)
 
-            # The open dropdown's search input
             search_sel = "div.ui-select-dropdown.open input.ui-select-search"
             try:
                 await page.wait_for_selector(search_sel, timeout=2000, state="visible")
@@ -646,8 +644,6 @@ async def run_agent():
             success = False
             failure = ""
 
-            # Split form_data fields into bill fields vs service fields dynamically.
-            # "bill_type" is a control key used only for navigation — excluded from both.
             bill_fields = {k: v for k, v in entry.items()
                            if k != "bill_type" and k not in SERVICE_FIELD_KEYS}
             service_fields = {k: v for k, v in entry.items()
@@ -659,7 +655,6 @@ async def run_agent():
 
             bill_type = entry.get("bill_type", "Patient")
 
-            # ── Phase 1: navigate to bills page + open Create Bill modal ──────
             navigated = False
             for attempt in range(1 + MAX_RETRIES):
                 try:
@@ -677,7 +672,6 @@ async def run_agent():
                 print(f"\n  ✗ Entry {i}: FAILED (navigation) — {failure[:200]}")
                 continue
 
-            # ── Phase 2: LLM fills bill fields + Python clicks Create Bill ────
             bill_created = False
             bill_fields_str = '\n'.join(f'  - {k}: {v}' for k, v in bill_fields.items())
             fill_msg = f"""Fill ONLY the fields listed in DATA TO FILL, in the order shown.
@@ -719,7 +713,6 @@ DATA TO FILL:
                 print(f"\n  ✗ Entry {i}: FAILED (bill fields) — {failure[:200]}")
                 continue
 
-            # ── Phase 3: LLM fills services rendered + Python saves & exits ──
             svc_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in service_fields.items())
             svc_msg = f"""You are on the Services Rendered form. Below is a live dump of every
 interactive element currently on the page. Use it to identify the correct
@@ -750,8 +743,6 @@ Fill ONLY the fields listed in DATA TO FILL. Call done_filling() when all are fi
                         f"Fill Services Rendered (Entry {i})"
                     )
 
-                    # Only save if at least one service field was actually filled.
-                    # Skip this check when there are no service fields in the entry.
                     if service_fields and not _any_field_filled(svc_messages):
                         failure = "LLM did not fill any service fields"
                         print(f"  [Phase 3] Attempt {attempt + 1}: no service fields filled, retrying...")
