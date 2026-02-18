@@ -10,7 +10,6 @@
     "reportable_reason": "Medical Non-emergency",
     "diagnoses": "008",
     "service_code": "00100",
-    "service_units": "5",
-    "dx_ptrs": "1"
+    "service_units": "5"
   }
 ]

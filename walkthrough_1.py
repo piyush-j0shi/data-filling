@@ -25,6 +25,15 @@ AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
 MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "groq")
 
+# Keys that belong to the Services Rendered phase.
+# Everything else in form_data (except "bill_type") goes to the bill fields phase.
+# Add new service-level field names here as needed.
+SERVICE_FIELD_KEYS = {
+    "service_code", "service_units", "dx_ptrs",
+    "modifier_1", "modifier_2", "modifier_3", "modifier_4",
+    "unit_charge",
+}
+
 if not os.environ.get("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = "your-api-key-here" 
 
@@ -236,6 +245,59 @@ async def add_diagnosis(text: str) -> str:
         return f"Failed to add diagnosis '{text}': {e}"
 
 @tool
+async def fill_dx_pointers(dx_ptrs: str) -> str:
+    """Fill the DX Pointer slots in the Services Rendered table.
+    Each slot is a separate ui-select dropdown. Pass a comma-separated string
+    of pointer numbers — one per slot (e.g. '1' or '1,2').
+
+    Args:
+        dx_ptrs: Comma-separated pointer values, e.g. '1' or '1,2'
+    """
+    page = get_page()
+    try:
+        values = [v.strip() for v in dx_ptrs.split(",") if v.strip()]
+        results = []
+
+        for idx, val in enumerate(values):
+            # Click the Nth dx-pointer container toggle via JS (no IDs available)
+            status = await page.evaluate("""([idx]) => {
+                const containers = document.querySelectorAll(
+                    '.ui-select-container[ng-model="diagnosisPointerSelectorCtrl.dxPointer"]'
+                );
+                if (idx >= containers.length) return 'out_of_range';
+                const toggle = containers[idx].querySelector('.ui-select-toggle');
+                if (!toggle) return 'no_toggle';
+                toggle.click();
+                return 'clicked';
+            }""", [idx])
+
+            if status == "out_of_range":
+                break
+            if status != "clicked":
+                results.append(f"slot {idx + 1}: {status}")
+                continue
+
+            await page.wait_for_timeout(700)
+
+            # The open dropdown's search input
+            search_sel = "div.ui-select-dropdown.open input.ui-select-search"
+            try:
+                await page.wait_for_selector(search_sel, timeout=2000, state="visible")
+                await page.fill(search_sel, val)
+                await page.wait_for_timeout(1000)
+                clicked = await page.evaluate(_CLICK_SUGGESTION_JS)
+                results.append(f"slot {idx + 1}: {'selected ' + clicked if clicked else 'no suggestion for ' + val}")
+            except Exception as e:
+                results.append(f"slot {idx + 1}: search input error - {e}")
+
+            await page.wait_for_timeout(400)
+
+        return "DX Pointers: " + "; ".join(results) if results else "No DX pointer values provided"
+    except Exception as e:
+        return f"Failed to fill DX pointers '{dx_ptrs}': {e}"
+
+
+@tool
 def done_filling() -> str:
     """Call this tool ONCE when every field has been filled, including all diagnoses.
     This signals the agent to stop — do NOT call any other tool after this."""
@@ -255,25 +317,34 @@ CREATE_BILL_FIELDS = """[Form: createBillForm] — fill in this exact numbered o
                                              add_diagnosis once per item.
 9.  [done_filling]    — call with NO arguments after ALL diagnoses have been added"""
 
-SERVICES_FIELDS = """[Form: servicesRenderedForm] — fill in this exact numbered order, ONE tool call per turn:
-1.  [type_and_select] "Service Code / CPT" → #serviceCodeInput
-2.  [fill_field]      "Units"              → #serviceUnitsInput
-3.  [fill_field]      "DX Pointers"        → #dxPointersInput
-4.  [done_filling]    — call with NO arguments after step 3 is complete"""
+SERVICES_FIELDS = """[Form: servicesRenderedForm] — FIELD REFERENCE (fill only fields present in DATA TO FILL):
+
+  service_code   [fill_ui_select]   → container_selector='#cptQuickKeySelect'
+  service_units  [fill_field]       → selector='input[name="serviceLineUnits1"]'
+  dx_ptrs        [fill_dx_pointers] → fill_dx_pointers(dx_ptrs=<value>)
+  modifier_1     [fill_field]       → selector='input[name="serviceLine1modifierInput1"]'
+  modifier_2     [fill_field]       → selector='input[name="serviceLine1modifierInput2"]'
+  modifier_3     [fill_field]       → selector='input[name="serviceLine1modifierInput3"]'
+  modifier_4     [fill_field]       → selector='input[name="serviceLine1modifierInput4"]'
+  unit_charge    [fill_field]       → selector='input[name="serviceLineUnitCharge1"]'
+
+After ALL present fields are filled, call done_filling() immediately."""
 
 
 SYSTEM_PROMPT = """You are a browser automation agent that fills web forms.
 
 STRICT RULES — follow exactly:
 1. Call ONLY ONE tool per turn. Never batch or combine tool calls.
-2. Fill fields IN ORDER by their number (1, 2, 3...).
-3. Use the tool shown in [brackets]:
-     [type_and_select]  → type_and_select(selector=..., text=<value>)
-     [fill_ui_select]   → fill_ui_select(container_selector=..., text=<value>)
-     [fill_field]       → fill_field(selector=..., value=<value>)
-     [select_option]    → select_option(selector=..., value=<value>)
-     [add_diagnosis]    → add_diagnosis(text=<single_diagnosis>)
-     [done_filling]     → done_filling()
+2. Fill ONLY the fields present in DATA TO FILL — skip any field not listed there.
+   Fill them in the order they appear in DATA TO FILL.
+3. Use the tool shown in [brackets] next to each field in the FIELDS reference:
+     [type_and_select]   → type_and_select(selector=..., text=<value>)
+     [fill_ui_select]    → fill_ui_select(container_selector=..., text=<value>)
+     [fill_field]        → fill_field(selector=..., value=<value>)
+     [select_option]     → select_option(selector=..., value=<value>)
+     [add_diagnosis]     → add_diagnosis(text=<single_diagnosis>)
+     [fill_dx_pointers]  → fill_dx_pointers(dx_ptrs=<value>)
+     [done_filling]      → done_filling()
 4. Copy selectors EXACTLY as listed — never modify them.
 5. Pass values EXACTLY as given in DATA TO FILL — do not alter them.
 6. For the Diagnoses field specifically:
@@ -282,7 +353,7 @@ STRICT RULES — follow exactly:
        call add_diagnosis ONCE PER ITEM, waiting for the result each time.
      - Each add_diagnosis call adds to the multi-select without clearing previous ones.
 7. If a tool returns "Failed", retry ONCE. If it still fails, move to the next field.
-8. After the LAST field (including all diagnosis entries), call done_filling() immediately.
+8. After the LAST present field is filled, call done_filling() immediately.
 9. NEVER restart from field 1 after reaching done_filling. It is the final call."""
 
 class AgentState(TypedDict):
@@ -290,7 +361,7 @@ class AgentState(TypedDict):
 
 def create_automation_agent():
     llm = initialize_model()
-    tools = [fill_field, type_and_select, select_option, fill_ui_select, add_diagnosis, done_filling]
+    tools = [fill_field, type_and_select, select_option, fill_ui_select, add_diagnosis, fill_dx_pointers, done_filling]
 
     workflow = StateGraph(AgentState)
 
@@ -440,6 +511,49 @@ async def navigate_to_create_bill(page: Page, bill_type: str):
     print(f"  Selected bill type: {bill_type}")
 
 
+async def _dump_services_html(page: Page):
+    """Dump all ui-select containers and bare inputs on the page so we can
+    read the real id/class/ng-model attributes and fix selectors."""
+    print("\n  [SELECTOR DUMP — all ui-select containers + inputs on page]")
+    try:
+        result = await page.evaluate("""() => {
+            const lines = [];
+
+            // 1. Every ui-select container (has a .ui-select-toggle child)
+            document.querySelectorAll('.ui-select-container').forEach(el => {
+                const attrs = {};
+                for (const a of el.attributes) attrs[a.name] = a.value;
+                const placeholder = el.querySelector('.ui-select-placeholder');
+                lines.push('UI-SELECT: ' + JSON.stringify({
+                    id: el.id || '',
+                    class: el.className,
+                    'ng-model': attrs['ng-model'] || '',
+                    placeholder: placeholder ? placeholder.textContent.trim() : ''
+                }));
+            });
+
+            // 2. Every visible input / select element
+            document.querySelectorAll('input:not([type=hidden]), select').forEach(el => {
+                const attrs = {};
+                for (const a of el.attributes) attrs[a.name] = a.value;
+                lines.push('INPUT: ' + JSON.stringify({
+                    tag: el.tagName,
+                    id: el.id || '',
+                    name: el.name || '',
+                    class: el.className,
+                    'ng-model': attrs['ng-model'] || '',
+                    placeholder: el.placeholder || ''
+                }));
+            });
+
+            return lines.join('\\n');
+        }""")
+        print(result)
+    except Exception as e:
+        print(f"  [SELECTOR DUMP failed: {e}]")
+    print("  [END SELECTOR DUMP]\n")
+
+
 async def click_create_bill(page: Page):
     """Always done by Python after LLM signals done — never delegated to the LLM."""
     try:
@@ -451,16 +565,34 @@ async def click_create_bill(page: Page):
 
 
 async def save_and_exit(page: Page):
-    await page.click("button:has-text('Save & Exit')", timeout=10000)
-    await page.wait_for_timeout(3000)
-    print("  Clicked Save & Exit")
+    for selector in [
+        "button:has-text('Save & Exit')",
+        "button:has-text('Post Charges & Close')",
+        "button:has-text('Post Charges')",
+    ]:
+        try:
+            await page.click(selector, timeout=5000)
+            await page.wait_for_timeout(3000)
+            label = selector.split("'")[1]
+            print(f"  Clicked '{label}'")
+            return
+        except Exception:
+            continue
+    raise RuntimeError("Could not find Save & Exit / Post Charges & Close button")
 
 
 MAX_RETRIES = 1
 
 def _any_field_filled(messages) -> bool:
-    fill_tools = {"fill_field", "type_and_select", "select_option", "fill_ui_select", "add_diagnosis"}
-    return any(getattr(m, 'name', '') in fill_tools for m in messages)
+    """Return True only if at least one fill tool call returned a non-failure result."""
+    fill_tools = {"fill_field", "type_and_select", "select_option",
+                  "fill_ui_select", "add_diagnosis", "fill_service_code"}
+    for m in messages:
+        if getattr(m, 'name', '') in fill_tools:
+            content = getattr(m, 'content', '') or ''
+            if not content.startswith("Failed") and not content.startswith("No "):
+                return True
+    return False
 
 def _normalize_diagnoses(raw) -> list[str]:
     """Ensure diagnoses is always a list of strings, regardless of input format.
@@ -509,32 +641,54 @@ async def run_agent():
             success = False
             failure = ""
 
+            # Split form_data fields into bill fields vs service fields dynamically.
+            # "bill_type" is a control key used only for navigation — excluded from both.
+            bill_fields = {k: v for k, v in entry.items()
+                           if k != "bill_type" and k not in SERVICE_FIELD_KEYS}
+            service_fields = {k: v for k, v in entry.items()
+                              if k in SERVICE_FIELD_KEYS}
+
+            if "diagnoses" in bill_fields:
+                diag_list = _normalize_diagnoses(bill_fields["diagnoses"])
+                bill_fields["diagnoses"] = json.dumps(diag_list)
+
+            bill_type = entry.get("bill_type", "Patient")
+
+            # ── Phase 1: navigate to bills page + open Create Bill modal ──────
+            navigated = False
             for attempt in range(1 + MAX_RETRIES):
                 try:
                     if attempt > 0:
-                        print(f"  Retrying entry {i} (attempt {attempt + 1})...")
-
-                    bill_type = entry.get("bill_type", "Patient")
+                        print(f"  [Phase 1] Retrying navigation (attempt {attempt + 1})...")
                     await navigate_to_create_bill(page, bill_type)
+                    navigated = True
+                    break
+                except Exception as e:
+                    failure = str(e)
+                    print(f"  [Phase 1] Navigation attempt {attempt + 1} failed: {e}")
 
-                    bill_fields = {k: v for k, v in entry.items()
-                                   if k not in ("bill_type", "service_code", "service_units", "dx_ptrs")}
+            if not navigated:
+                results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
+                print(f"\n  ✗ Entry {i}: FAILED (navigation) — {failure[:200]}")
+                continue
 
-                    if "diagnoses" in bill_fields:
-                        diag_list = _normalize_diagnoses(bill_fields["diagnoses"])
-                        bill_fields["diagnoses"] = json.dumps(diag_list)
-
-                    fields_str = '\n'.join(f'  - {k}: {v}' for k, v in bill_fields.items())
-
-                    fill_msg = f"""Fill the form fields below ONE AT A TIME in numbered order.
+            # ── Phase 2: LLM fills bill fields + Python clicks Create Bill ────
+            bill_created = False
+            bill_fields_str = '\n'.join(f'  - {k}: {v}' for k, v in bill_fields.items())
+            fill_msg = f"""Fill ONLY the fields listed in DATA TO FILL, in the order shown.
 For the Diagnoses field, call add_diagnosis() once for EACH item in the list.
-Call done_filling() after ALL fields including all diagnoses are complete.
+Call done_filling() after ALL present fields (including all diagnoses) are complete.
 
-FIELDS:
+FIELDS REFERENCE:
 {CREATE_BILL_FIELDS}
 
 DATA TO FILL:
-{fields_str}"""
+{bill_fields_str}"""
+
+            for attempt in range(1 + MAX_RETRIES):
+                try:
+                    if attempt > 0:
+                        print(f"  [Phase 2] Retrying bill fields (attempt {attempt + 1})...")
 
                     fill_messages = await run_phase(
                         graph, [("user", fill_msg)],
@@ -543,24 +697,38 @@ DATA TO FILL:
 
                     if not _any_field_filled(fill_messages):
                         failure = "LLM did not fill any form fields"
-                        print(f"  Attempt {attempt + 1}: no fields were filled, skipping")
+                        print(f"  [Phase 2] Attempt {attempt + 1}: no fields filled, retrying...")
                         continue
 
                     await click_create_bill(page)
+                    await _dump_services_html(page)
+                    bill_created = True
+                    break
 
-                    service_fields = {k: entry[k]
-                                      for k in ("service_code", "service_units", "dx_ptrs")
-                                      if k in entry}
-                    svc_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in service_fields.items())
+                except Exception as e:
+                    failure = str(e)
+                    print(f"  [Phase 2] Bill fields attempt {attempt + 1} failed: {e}")
 
-                    svc_msg = f"""Fill the form fields below ONE AT A TIME in numbered order.
-Call done_filling() after ALL fields are complete.
+            if not bill_created:
+                results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
+                print(f"\n  ✗ Entry {i}: FAILED (bill fields) — {failure[:200]}")
+                continue
 
-FIELDS:
+            # ── Phase 3: LLM fills services rendered + Python saves & exits ──
+            svc_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in service_fields.items())
+            svc_msg = f"""Fill ONLY the fields listed in DATA TO FILL, in the order shown.
+Call done_filling() after ALL present fields are complete.
+
+FIELDS REFERENCE:
 {SERVICES_FIELDS}
 
 DATA TO FILL:
 {svc_fields_str}"""
+
+            for attempt in range(1 + MAX_RETRIES):
+                try:
+                    if attempt > 0:
+                        print(f"  [Phase 3] Retrying services (attempt {attempt + 1})...")
 
                     await run_phase(
                         graph, [("user", svc_msg)],
@@ -573,7 +741,7 @@ DATA TO FILL:
 
                 except Exception as e:
                     failure = str(e)
-                    print(f"  Entry {i} attempt {attempt + 1} exception: {e}")
+                    print(f"  [Phase 3] Services attempt {attempt + 1} failed: {e}")
 
             if success:
                 print(f"\n  ✓ Entry {i}: SUCCESS")
