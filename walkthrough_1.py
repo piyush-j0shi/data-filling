@@ -112,7 +112,10 @@ async def fill_field(selector: str, value: str) -> str:
     """Fill a plain input/textarea field by CSS selector."""
     page = get_page()
     try:
-        await page.wait_for_selector(selector, timeout=5000, state="visible")
+        # Wait for the element to be in the DOM (attached), then scroll it
+        # into view before filling — handles off-screen AngularJS inputs.
+        await page.wait_for_selector(selector, timeout=5000, state="attached")
+        await page.locator(selector).scroll_into_view_if_needed(timeout=3000)
         await page.fill(selector, value, timeout=5000)
         await page.wait_for_timeout(200)
         return f"Filled {selector} with '{value}'"
@@ -317,19 +320,6 @@ CREATE_BILL_FIELDS = """[Form: createBillForm] — fill in this exact numbered o
                                              add_diagnosis once per item.
 9.  [done_filling]    — call with NO arguments after ALL diagnoses have been added"""
 
-SERVICES_FIELDS = """[Form: servicesRenderedForm] — FIELD REFERENCE (fill only fields present in DATA TO FILL):
-
-  service_code   [fill_ui_select]   → container_selector='#cptQuickKeySelect'
-  service_units  [fill_field]       → selector='input[name="serviceLineUnits1"]'
-  dx_ptrs        [fill_dx_pointers] → fill_dx_pointers(dx_ptrs=<value>)
-  modifier_1     [fill_field]       → selector='input[name="serviceLine1modifierInput1"]'
-  modifier_2     [fill_field]       → selector='input[name="serviceLine1modifierInput2"]'
-  modifier_3     [fill_field]       → selector='input[name="serviceLine1modifierInput3"]'
-  modifier_4     [fill_field]       → selector='input[name="serviceLine1modifierInput4"]'
-  unit_charge    [fill_field]       → selector='input[name="serviceLineUnitCharge1"]'
-
-After ALL present fields are filled, call done_filling() immediately."""
-
 
 SYSTEM_PROMPT = """You are a browser automation agent that fills web forms.
 
@@ -511,47 +501,62 @@ async def navigate_to_create_bill(page: Page, bill_type: str):
     print(f"  Selected bill type: {bill_type}")
 
 
-async def _dump_services_html(page: Page):
-    """Dump all ui-select containers and bare inputs on the page so we can
-    read the real id/class/ng-model attributes and fix selectors."""
-    print("\n  [SELECTOR DUMP — all ui-select containers + inputs on page]")
+async def _get_services_dump(page: Page) -> str:
+    """Capture only service-line-relevant elements from the Services Rendered page.
+    Filters by name/id/ng-model so the LLM receives a focused, unambiguous list.
+    """
     try:
         result = await page.evaluate("""() => {
             const lines = [];
 
-            // 1. Every ui-select container (has a .ui-select-toggle child)
+            // Patterns that identify service-line elements (not sidebar/filter noise)
+            const svcPatterns = [
+                /serviceLine/i, /cpt/i, /dxPointer/i, /diagnosisPointer/i,
+                /selectedCode/i, /item\\.units/i, /item\\.unitCharge/i, /modifier/i,
+            ];
+            const relevant = (str) => svcPatterns.some(p => p.test(str));
+
+            // IDs that belong to filter/sidebar widgets — NOT the service line form.
+            // Exclude them so the LLM doesn't confuse them with the editable fields.
+            const excludedIds = new Set(['cptCodeSelect']);
+
+            // ui-select containers relevant to the service line
             document.querySelectorAll('.ui-select-container').forEach(el => {
-                const attrs = {};
-                for (const a of el.attributes) attrs[a.name] = a.value;
+                const ngModel = el.getAttribute('ng-model') || '';
+                const id = el.id || '';
+                if (excludedIds.has(id)) return;
+                if (!relevant(id) && !relevant(ngModel)) return;
                 const placeholder = el.querySelector('.ui-select-placeholder');
                 lines.push('UI-SELECT: ' + JSON.stringify({
-                    id: el.id || '',
-                    class: el.className,
-                    'ng-model': attrs['ng-model'] || '',
+                    id: id,
+                    'ng-model': ngModel,
                     placeholder: placeholder ? placeholder.textContent.trim() : ''
                 }));
             });
 
-            // 2. Every visible input / select element
+            // inputs / selects relevant to the service line
             document.querySelectorAll('input:not([type=hidden]), select').forEach(el => {
-                const attrs = {};
-                for (const a of el.attributes) attrs[a.name] = a.value;
+                const ngModel = el.getAttribute('ng-model') || '';
+                const name = el.name || '';
+                const id = el.id || '';
+                if (!relevant(id) && !relevant(name) && !relevant(ngModel)) return;
                 lines.push('INPUT: ' + JSON.stringify({
                     tag: el.tagName,
-                    id: el.id || '',
-                    name: el.name || '',
-                    class: el.className,
-                    'ng-model': attrs['ng-model'] || '',
+                    id: id,
+                    name: name,
+                    'ng-model': ngModel,
                     placeholder: el.placeholder || ''
                 }));
             });
 
             return lines.join('\\n');
         }""")
-        print(result)
+        print("\n  [SERVICES DUMP]\n" + result + "\n  [END SERVICES DUMP]\n")
+        return result
     except Exception as e:
-        print(f"  [SELECTOR DUMP failed: {e}]")
-    print("  [END SELECTOR DUMP]\n")
+        msg = f"[dump failed: {e}]"
+        print(f"  {msg}")
+        return msg
 
 
 async def click_create_bill(page: Page):
@@ -633,10 +638,10 @@ async def run_agent():
 
         for i, entry in enumerate(form_data, 1):
             fields_display = ', '.join(f'{k}="{v}"' for k, v in entry.items())
-            print(f"\n{'=' * 70}")
+            print(f"{'─' * 80}")
             print(f"BILL ENTRY {i}/{len(form_data)}")
             print(f"{fields_display}")
-            print(f"{'=' * 70}")
+            print(f"{'─' * 80}")
 
             success = False
             failure = ""
@@ -701,7 +706,7 @@ DATA TO FILL:
                         continue
 
                     await click_create_bill(page)
-                    await _dump_services_html(page)
+                    page_dump = await _get_services_dump(page)
                     bill_created = True
                     break
 
@@ -716,24 +721,41 @@ DATA TO FILL:
 
             # ── Phase 3: LLM fills services rendered + Python saves & exits ──
             svc_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in service_fields.items())
-            svc_msg = f"""Fill ONLY the fields listed in DATA TO FILL, in the order shown.
-Call done_filling() after ALL present fields are complete.
+            svc_msg = f"""You are on the Services Rendered form. Below is a live dump of every
+interactive element currently on the page. Use it to identify the correct
+selector for each field in DATA TO FILL, then fill it with the right tool.
 
-FIELDS REFERENCE:
-{SERVICES_FIELDS}
+TOOL REFERENCE:
+  ui-select with id      → fill_ui_select(container_selector='#<id>', text=<value>)
+  ui-select without id   → fill_ui_select(container_selector='[ng-model="<ng-model>"]', text=<value>)
+  input/select by name   → fill_field(selector='input[name="<name>"]', value=<value>)
+  input/select by id     → fill_field(selector='#<id>', value=<value>)
+  DX pointer slots       → fill_dx_pointers(dx_ptrs=<value>)
+
+PAGE ELEMENTS:
+{page_dump}
 
 DATA TO FILL:
-{svc_fields_str}"""
+{svc_fields_str}
+
+Fill ONLY the fields listed in DATA TO FILL. Call done_filling() when all are filled."""
 
             for attempt in range(1 + MAX_RETRIES):
                 try:
                     if attempt > 0:
                         print(f"  [Phase 3] Retrying services (attempt {attempt + 1})...")
 
-                    await run_phase(
+                    svc_messages = await run_phase(
                         graph, [("user", svc_msg)],
                         f"Fill Services Rendered (Entry {i})"
                     )
+
+                    # Only save if at least one service field was actually filled.
+                    # Skip this check when there are no service fields in the entry.
+                    if service_fields and not _any_field_filled(svc_messages):
+                        failure = "LLM did not fill any service fields"
+                        print(f"  [Phase 3] Attempt {attempt + 1}: no service fields filled, retrying...")
+                        continue
 
                     await save_and_exit(page)
                     success = True
