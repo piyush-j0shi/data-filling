@@ -25,8 +25,6 @@ APP_URL = os.environ.get("APP_URL", "https://your-public-ngrok-url.ngrok-free.ap
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
 
-FORM_SELECTOR = ".ng-invalid.ng-invalid-required.ng-valid-date.ng-valid-dp-min-date.ng-valid-dp-max-date.ng-dirty.ng-valid-editable.ng-valid-parse"
-
 _page_holder: dict[str, Page | None] = {"page": None}
 
 def set_page(page: Page):
@@ -58,31 +56,100 @@ _CLICK_SUGGESTION_JS = """() => {
     return null;
 }"""
 
-_EXTRACT_FORM_JS = """(formSelector) => {
-    let root = document.querySelector(formSelector);
+_DISCOVER_AND_EXTRACT_FORM_JS = """() => {
+    // ── Form discovery ──
+    // Priority 1: If a modal is open, ONLY search inside it (ignore background forms)
+    let root = null;
+    const modal = document.querySelector('.modal-dialog, .modal-content, [uib-modal-window]');
+    if (modal) {
+        // Look for a named form inside the modal, otherwise use the modal itself
+        root = modal.querySelector('form[name], [ng-form]') || modal;
+    }
+    // Priority 2: Named form or ng-form
+    if (!root) {
+        const namedForms = [...document.querySelectorAll('form[name], [ng-form]')];
+        if (namedForms.length === 1) {
+            root = namedForms[0];
+        } else if (namedForms.length > 1) {
+            let bestCount = 0;
+            for (const f of namedForms) {
+                const c = f.querySelectorAll('input, select, textarea').length;
+                if (c > bestCount) { bestCount = c; root = f; }
+            }
+        }
+    }
+    // Priority 3: Largest visible form
+    if (!root) {
+        let maxInputs = 0;
+        for (const f of document.querySelectorAll('form')) {
+            const st = window.getComputedStyle(f);
+            if (st.display === 'none' || st.visibility === 'hidden') continue;
+            const c = f.querySelectorAll('input, select, textarea').length;
+            if (c > maxInputs) { maxInputs = c; root = f; }
+        }
+    }
+    // Priority 4: document.body
     if (!root) root = document.body;
+    const formName = root.getAttribute
+        ? (root.getAttribute('name') || root.getAttribute('ng-form') || root.tagName.toLowerCase())
+        : 'body';
+
+    // ── Extract interactive elements ──
     const results = [];
     const seen = new Set();
-    const attrs = ['id', 'name', 'type', 'placeholder', 'value', 'for', 'role',
-                   'aria-label', 'data-testid', 'data-field'];
-    for (const el of root.querySelectorAll('input, select, textarea, button, label, option, [role="button"], [role="combobox"], [role="listbox"], [role="option"], [role="textbox"]')) {
+
+    for (const el of root.querySelectorAll('input:not([type="hidden"]), select, textarea, button, [role="combobox"], [role="listbox"]')) {
         if (seen.has(el)) continue;
         seen.add(el);
         const st = window.getComputedStyle(el);
         if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue;
-        if (el.offsetWidth === 0 && el.offsetHeight === 0 && el.tagName !== 'INPUT' && el.tagName !== 'OPTION') continue;
-        const info = { tag: el.tagName.toLowerCase() };
-        for (const a of attrs) {
-            const v = el.getAttribute(a);
-            if (v?.trim()) info[a] = v.trim().substring(0, 120);
+        if (el.offsetWidth === 0 && el.offsetHeight === 0 && el.tagName !== 'INPUT') continue;
+        if (el.disabled || el.readOnly) continue;
+
+        // ── Pre-compute CSS selector ──
+        const tag = el.tagName.toLowerCase();
+        let sel = '';
+        const id = el.getAttribute('id');
+        const name = el.getAttribute('name');
+        const ph = el.getAttribute('placeholder');
+        const ngm = el.getAttribute('ng-model');
+        if (id) sel = '#' + id;
+        else if (name) sel = tag + "[name='" + name + "']";
+        else if (ph) sel = tag + "[placeholder='" + ph + "']";
+        else if (ngm) sel = tag + "[ng-model='" + ngm + "']";
+        else continue; // no usable selector, skip
+
+        // ── Detect interaction type ──
+        let interaction = 'input';
+        if (el.hasAttribute('uib-typeahead') || el.getAttribute('aria-autocomplete') ||
+            el.getAttribute('role') === 'combobox' || el.closest('.ui-select-container')) {
+            interaction = 'typeahead';
+        } else if (tag === 'select') {
+            interaction = 'select';
+        } else if (tag === 'button') {
+            interaction = 'click';
         }
-        if (el.disabled) info.disabled = 'true';
-        if (el.readOnly) info.readonly = 'true';
-        const text = el.textContent?.trim().substring(0, 80);
-        if (text) info.text = text;
-        results.push(info);
+
+        // ── Find label ──
+        let label = '';
+        if (id) {
+            const lbl = root.querySelector('label[for="' + id + '"]');
+            if (lbl) label = lbl.textContent.trim();
+        }
+        if (!label) {
+            const group = el.closest('.form-group, .form-field, fieldset, .field-container');
+            if (group) {
+                const lbl = group.querySelector('label');
+                if (lbl) label = lbl.textContent.trim();
+            }
+        }
+        if (!label && ph) label = ph;
+        if (!label && tag === 'button') label = el.textContent?.trim() || '';
+        if (!label) continue; // no way to identify this field, skip
+
+        results.push({ selector: sel, interaction: interaction, label: label.substring(0, 80) });
     }
-    return results;
+    return { formName: formName, elementCount: results.length, elements: results };
 }"""
 
 
@@ -107,21 +174,15 @@ async def get_bedrock_browser():
 
 async def extract_form_elements(page: Page) -> str:
     try:
-        elements = await page.evaluate(_EXTRACT_FORM_JS, FORM_SELECTOR)
-        if not elements:
-            return f"No form found matching selector '{FORM_SELECTOR}'."
-        lines = []
-        for el in elements:
-            tag = el.pop('tag')
-            parts = [f"<{tag}"]
-            for k, v in el.items():
-                if k != 'text':
-                    parts.append(f'{k}="{v}"')
-            text = el.get('text', '')
-            tag_str = ' '.join(parts) + '>'
-            if text:
-                tag_str += text
-            lines.append(tag_str)
+        data = await page.evaluate(_DISCOVER_AND_EXTRACT_FORM_JS)
+        if not data or not data.get("elements"):
+            return "No form elements discovered on the page."
+        form_name = data.get("formName", "unknown")
+        element_count = data.get("elementCount", 0)
+        lines = [f"[Form: {form_name}] ({element_count} fields)"]
+        for el in data["elements"]:
+            # Format: [interaction] "label" → selector
+            lines.append(f"[{el['interaction']}] \"{el['label']}\" → {el['selector']}")
         result = '\n'.join(lines)
         return result[:16000] + '\n... (truncated)' if len(result) > 16000 else result
     except Exception as e:
@@ -132,7 +193,7 @@ async def extract_form_elements(page: Page) -> str:
 
 @tool
 async def get_page_html() -> str:
-    """Returns interactive elements inside the billing form on the current page."""
+    """Returns interactive elements from the dynamically discovered form on the current page."""
     return await extract_form_elements(get_page())
 
 @tool
@@ -219,30 +280,25 @@ async def select_option(selector: str, value: str) -> str:
 
 # ── LLM Agent ────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a browser automation agent for medical billing forms. The form type can vary (Patient Bill, Claim Bill, Worker Bill, etc.) — each has different label names but the same structure.
+SYSTEM_PROMPT = """You are a browser automation agent. You fill web forms using a pre-built list of fields.
+
+Each field in the list looks like:
+  [interaction_type] "Label Text" → css_selector
 
 RULES:
-1. When form HTML is PROVIDED in the user message, use it directly. Do NOT call get_page_html during form filling — the DOM mutates after each interaction.
-2. Fill form fields ONE AT A TIME. Wait for each tool call to complete before the next.
-3. RETRY ON FAILURE: If a tool call returns "Failed", IMMEDIATELY retry the same call once.
-4. Skip elements marked disabled="true" or readonly="true".
+1. When fields are PROVIDED in the user message, use them directly. Do NOT call get_page_html — the DOM mutates after each fill.
+2. Fill ONE field at a time. Wait for the result before the next.
+3. If a tool call returns "Failed", retry it once.
 
-HOW TO MATCH DATA FIELDS TO FORM ELEMENTS:
-- You receive data as key-value pairs (e.g. "patient_name": "John Doe").
-- Look at the <label> elements in the form HTML and match them to data keys by meaning.
-  For example: data key "patient_name" could match label "Patient Name", "Claimant Name", "Worker Name", etc.
-- Once you find the matching label, locate the input/select associated with it via the label's "for" attribute or nearby elements.
-
-HOW TO IDENTIFY FIELD TYPES FROM HTML:
-- Autocomplete fields: Elements with role="combobox", or inputs inside a ui-select wrapper. Use type_and_select.
-- Regular inputs: Standard <input> with type="text", type="date", etc. Use fill_field.
-- Select dropdowns: <select> elements with <option> children. Use select_option.
-- Buttons: <button> or elements with role="button". Use click_element.
-
-HOW TO BUILD CSS SELECTORS:
-- If element has id: use "#theId" (e.g. #patientName)
-- If element has name: use "tag[name='theName']" (e.g. input[name='dateOfService'])
-- If element has placeholder: use "tag[placeholder='thePlaceholder']"
+HOW TO FILL:
+1. Match each data key to a field by comparing the key meaning to the Label Text.
+2. Use the interaction type to pick the tool:
+   - [typeahead] → type_and_select(selector, value)
+   - [select] → select_option(selector, value)
+   - [input] → fill_field(selector, value)
+   - [click] → click_element(selector)
+3. Copy the css_selector from the field line EXACTLY as-is. Do NOT modify, shorten, or invent selectors.
+4. If no field matches a data key, skip that key.
 
 ONLY use get_page_html after all fields are filled to verify."""
 
@@ -418,31 +474,19 @@ async def run_agent():
 
                     # Step 2: Extract form HTML and let LLM fill the bill fields
                     form_html = await extract_form_elements(page)
+                    print(f"  Extracted form: {form_html[:200]}")
 
                     bill_fields = {k: v for k, v in entry.items()
                                    if k not in ("bill_type", "service_code", "service_units", "dx_ptrs")}
                     fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in bill_fields.items())
 
-                    fill_msg = f"""Fill the billing form fields. This is a "{bill_type}" bill form.
+                    fill_msg = f"""Fill the form fields below. Match each data key to a field by label meaning, use the tool indicated by [type], and copy the selector exactly.
 
-FORM HTML (extracted from the form):
+FIELDS:
 {form_html}
 
 DATA TO FILL:
-{fields_str}
-
-STEPS:
-1. Look at the <label> elements in the form HTML above.
-2. For each data key, find the label that matches it by meaning (e.g. data key "patient_name" could match label "Patient Name", "Claimant Name", "Worker Name", etc. depending on the bill type).
-3. Find the input/select element associated with that label (via the "for" attribute or nearby elements).
-4. Determine the field type from the HTML:
-   - If the element has role="combobox" or is inside a ui-select wrapper → use type_and_select
-   - If it's a plain <input> (text, date, etc.) → use fill_field
-   - If it's a <select> with <option> children → use select_option
-5. Build a CSS selector (prefer #id, then [name=...], then [placeholder=...]).
-6. Fill ONE field at a time. Wait for the result before the next.
-7. If a tool call fails, retry it once.
-8. Skip any data key that has no matching label in the form."""
+{fields_str}"""
 
                     fill_messages = await run_phase(
                         graph, [("user", fill_msg)],
@@ -455,6 +499,17 @@ STEPS:
                         print(f"  Fill attempt {attempt + 1} detected issue")
                         continue
 
+                    # Verify the LLM actually filled fields (not just called get_page_html)
+                    fill_tool_names = {
+                        getattr(m, 'name', '') for m in fill_messages
+                        if hasattr(m, 'name')
+                    }
+                    actually_filled = fill_tool_names & {"fill_field", "type_and_select", "select_option", "click_element"}
+                    if not actually_filled:
+                        failure = "LLM did not fill any form fields"
+                        print(f"  Fill attempt {attempt + 1}: no fields were filled, skipping Create Bill")
+                        continue
+
                     # Step 3: Click Create Bill button
                     await click_create_bill(page)
 
@@ -463,25 +518,15 @@ STEPS:
                     svc_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in service_fields.items())
 
                     services_html = await extract_form_elements(page)
+                    print(f"  Extracted services form: {services_html[:200]}")
 
-                    svc_msg = f"""Fill the Services Rendered section on the Manage Bill page.
+                    svc_msg = f"""Fill the remaining form fields below. Match each data key to a field by label meaning, use the tool indicated by [type], and copy the selector exactly.
 
-FORM HTML:
+FIELDS:
 {services_html}
 
 DATA TO FILL:
-{svc_fields_str}
-
-STEPS:
-1. Look at the form HTML and find the Services Rendered fields.
-2. For each data key, find the matching form element by label or field name:
-   - "service_code" → the Code/Service Code field (usually an autocomplete — use type_and_select)
-   - "service_units" → the Units field (usually a plain input — use fill_field)
-   - "dx_ptrs" → the DX Pointer buttons (numbered buttons like 1, 2, 3, 4 — use click_element)
-3. Build a CSS selector from the element's id, name, or placeholder.
-4. Fill ONE field at a time. Wait for the result before the next.
-5. If a tool call fails, retry it once.
-6. After filling all fields, call get_page_html to confirm."""
+{svc_fields_str}"""
 
                     svc_messages = await run_phase(
                         graph, [("user", svc_msg)],
