@@ -7,7 +7,6 @@ from typing_extensions import TypedDict
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-import nest_asyncio
 from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain.chat_models import init_chat_model
@@ -35,7 +34,6 @@ def get_page() -> Page:
         raise RuntimeError("Browser session not active. Call set_page first.")
     return _page_holder["page"]
 
-# Click the first visible suggestion in any dropdown/typeahead
 _CLICK_SUGGESTION_JS = """() => {
     const sels = [
         '.ui-select-choices-row', '.ui-select-choices-row-inner',
@@ -77,8 +75,6 @@ async def get_bedrock_browser():
                 await browser.close()
 
 
-# ── Tools ────────────────────────────────────────────────────────────────────
-
 @tool
 async def fill_field(selector: str, value: str) -> str:
     """Fill a plain input/textarea field by CSS selector."""
@@ -90,29 +86,6 @@ async def fill_field(selector: str, value: str) -> str:
         return f"Filled {selector} with '{value}'"
     except Exception as e:
         return f"Failed {selector}: {e}"
-
-@tool
-async def click_element(selector: str) -> str:
-    """Click an element by CSS selector."""
-    page = get_page()
-    try:
-        await page.wait_for_selector(selector, timeout=5000, state="visible")
-        await page.click(selector, timeout=5000)
-        await page.wait_for_timeout(1000)
-        return f"Clicked {selector}"
-    except Exception as e:
-        return f"Failed {selector}: {e}"
-
-@tool
-async def press_key(key: str) -> str:
-    """Press a keyboard key (Enter, Tab, Escape, etc)."""
-    page = get_page()
-    try:
-        await page.keyboard.press(key)
-        await page.wait_for_timeout(500)
-        return f"Pressed {key}"
-    except Exception as e:
-        return f"Failed: {e}"
 
 @tool
 async def type_and_select(selector: str, text: str) -> str:
@@ -171,7 +144,6 @@ async def fill_ui_select(container_selector: str, text: str) -> str:
     try:
         await page.wait_for_selector(container_selector, timeout=5000, state="visible")
 
-        # Click toggle or fall back to container itself
         toggle = f"{container_selector} .ui-select-toggle"
         try:
             await page.wait_for_selector(toggle, timeout=3000, state="visible")
@@ -180,7 +152,6 @@ async def fill_ui_select(container_selector: str, text: str) -> str:
             await page.click(container_selector)
         await page.wait_for_timeout(700)
 
-        # Search input appears after clicking — try multiple selectors
         search_selectors = [
             f"{container_selector} input.ui-select-search",
             f"{container_selector} input[type='search']",
@@ -225,14 +196,12 @@ async def add_diagnosis(text: str) -> str:
         text: ICD code or diagnosis name to search and select (e.g. 'J06.9' or 'Anxiety')
     """
     page = get_page()
-    # Exact selector from the real HTML: input[type=search] inside #diagnosesSelect
     selector = "#diagnosesSelect input.ui-select-search"
     try:
         await page.wait_for_selector(selector, timeout=5000, state="visible")
         await page.click(selector)
         await page.fill(selector, "")
         await page.type(selector, text, delay=50)
-        # Longer wait because diagnoses search hits a server refresh-delay="500"
         await page.wait_for_timeout(2500)
 
         clicked = await page.evaluate(_CLICK_SUGGESTION_JS)
@@ -250,10 +219,6 @@ def done_filling() -> str:
     return "DONE"
 
 
-# ── Hardcoded field definitions ───────────────────────────────────────────────
-
-# Diagnoses is a multi-select: if there are multiple diagnoses, call add_diagnosis
-# once per entry. The field remembers each selected item.
 CREATE_BILL_FIELDS = """[Form: createBillForm] — fill in this exact numbered order, ONE tool call per turn:
 1.  [type_and_select] "Patient Name"       → #emaPatientQuickSearch
 2.  [fill_ui_select]  "Service Location"   → #placeOfServiceSelect
@@ -267,15 +232,12 @@ CREATE_BILL_FIELDS = """[Form: createBillForm] — fill in this exact numbered o
                                              add_diagnosis once per item.
 9.  [done_filling]    — call with NO arguments after ALL diagnoses have been added"""
 
-# Update these selectors after inspecting your services rendered form DOM
 SERVICES_FIELDS = """[Form: servicesRenderedForm] — fill in this exact numbered order, ONE tool call per turn:
 1.  [type_and_select] "Service Code / CPT" → #serviceCodeInput
 2.  [fill_field]      "Units"              → #serviceUnitsInput
 3.  [fill_field]      "DX Pointers"        → #dxPointersInput
 4.  [done_filling]    — call with NO arguments after step 3 is complete"""
 
-
-# ── Agent ─────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are a browser automation agent that fills web forms.
 
@@ -305,18 +267,15 @@ class AgentState(TypedDict):
 
 def create_automation_agent():
     llm = init_chat_model(model="llama-3.3-70b-versatile", model_provider="groq")
-    tools = [fill_field, click_element, press_key, type_and_select,
-             select_option, fill_ui_select, add_diagnosis, done_filling]
+    tools = [fill_field, type_and_select, select_option, fill_ui_select, add_diagnosis, done_filling]
 
     workflow = StateGraph(AgentState)
 
     async def call_model(state):
         all_msgs = list(state["messages"])
         if len(all_msgs) > 14:
-            # Always keep system context + first user message + recent history
             all_msgs = all_msgs[:1] + all_msgs[-12:]
 
-        # parallel_tool_calls=False = strictly one tool per turn
         response = await llm.bind_tools(tools, parallel_tool_calls=False).ainvoke(
             [SystemMessage(content=SYSTEM_PROMPT)] + all_msgs
         )
@@ -355,10 +314,8 @@ def create_automation_agent():
         """Stop the graph as soon as a tool returned 'DONE' (done_filling result)."""
         msgs = state["messages"]
         for msg in reversed(msgs):
-            # ToolMessage with content "DONE" = done_filling was just executed
             if hasattr(msg, 'content') and msg.content == "DONE":
                 return END
-            # Stop scanning once we hit an AI message
             if hasattr(msg, 'tool_calls'):
                 break
         return "agent"
@@ -378,8 +335,6 @@ async def run_phase(graph, messages, phase_name, recursion_limit=50):
     result = await graph.ainvoke({"messages": messages}, {"recursion_limit": recursion_limit})
     return list(result["messages"])
 
-
-# ── Hardcoded Navigation ──────────────────────────────────────────────────────
 
 async def login(page: Page):
     username = os.environ.get("LOGIN_USERNAME", "admin")
@@ -414,13 +369,11 @@ async def navigate_to_create_bill(page: Page, bill_type: str):
                       + "/ema/practice/financial/Financials.action#/home/bills")
     print(f"  Navigating to: {financials_url}")
     await page.goto(financials_url, wait_until="domcontentloaded", timeout=30000)
-    # Give Angular time to bootstrap the route
     await page.wait_for_timeout(4000)
 
     current_url = page.url
     print(f"  Current URL after nav: {current_url}")
 
-    # Dump visible button/link text to help diagnose selector mismatches
     visible_buttons = await page.evaluate("""() => {
         const els = [...document.querySelectorAll('button, a')];
         return els
@@ -433,7 +386,6 @@ async def navigate_to_create_bill(page: Page, bill_type: str):
     }""")
     print(f"  Visible buttons/links: {visible_buttons[:20]}")
 
-    # Try multiple selector strategies for the Create a Bill button
     create_bill_selectors = [
         "button:has-text('Create a Bill')",
         "a:has-text('Create a Bill')",
@@ -454,7 +406,6 @@ async def navigate_to_create_bill(page: Page, bill_type: str):
             continue
 
     if not clicked:
-        # Last resort: dump full page text for diagnosis
         body_text = await page.evaluate("() => document.body.innerText.substring(0, 500)")
         print(f"  Could not find Create a Bill button. Page text preview:\n  {body_text}")
         raise RuntimeError("Could not find 'Create a Bill' button — see logs above for page state")
@@ -482,13 +433,10 @@ async def save_and_exit(page: Page):
     print("  Clicked Save & Exit")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 MAX_RETRIES = 1
 
 def _any_field_filled(messages) -> bool:
-    fill_tools = {"fill_field", "type_and_select", "select_option",
-                  "fill_ui_select", "click_element", "add_diagnosis"}
+    fill_tools = {"fill_field", "type_and_select", "select_option", "fill_ui_select", "add_diagnosis"}
     return any(getattr(m, 'name', '') in fill_tools for m in messages)
 
 def _normalize_diagnoses(raw) -> list[str]:
@@ -499,7 +447,6 @@ def _normalize_diagnoses(raw) -> list[str]:
         return [str(d).strip() for d in raw if str(d).strip()]
     if isinstance(raw, str):
         raw = raw.strip()
-        # Try JSON array first
         if raw.startswith("["):
             try:
                 parsed = json.loads(raw)
@@ -507,16 +454,11 @@ def _normalize_diagnoses(raw) -> list[str]:
                     return [str(d).strip() for d in parsed if str(d).strip()]
             except json.JSONDecodeError:
                 pass
-        # Fall back to comma-separated
         return [d.strip() for d in raw.split(",") if d.strip()]
     return []
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 async def run_agent():
-    nest_asyncio.apply()
-
     try:
         with open(FORM_DATA_FILE, "r") as f:
             form_data = json.load(f)
@@ -549,18 +491,14 @@ async def run_agent():
                     if attempt > 0:
                         print(f"  Retrying entry {i} (attempt {attempt + 1})...")
 
-                    # Step 1: Navigate & open modal
                     bill_type = entry.get("bill_type", "Patient")
                     await navigate_to_create_bill(page, bill_type)
 
-                    # Step 2: Build bill fields (exclude service-level fields)
                     bill_fields = {k: v for k, v in entry.items()
                                    if k not in ("bill_type", "service_code", "service_units", "dx_ptrs")}
 
-                    # Normalize diagnoses so the LLM always sees a clean list
                     if "diagnoses" in bill_fields:
                         diag_list = _normalize_diagnoses(bill_fields["diagnoses"])
-                        # Present as a JSON array so the LLM knows exactly how many calls to make
                         bill_fields["diagnoses"] = json.dumps(diag_list)
 
                     fields_str = '\n'.join(f'  - {k}: {v}' for k, v in bill_fields.items())
@@ -585,10 +523,8 @@ DATA TO FILL:
                         print(f"  Attempt {attempt + 1}: no fields were filled, skipping")
                         continue
 
-                    # Step 3: Click Create Bill — always Python, never LLM
                     await click_create_bill(page)
 
-                    # Step 4: Fill Services Rendered
                     service_fields = {k: entry[k]
                                       for k in ("service_code", "service_units", "dx_ptrs")
                                       if k in entry}
@@ -608,7 +544,6 @@ DATA TO FILL:
                         f"Fill Services Rendered (Entry {i})"
                     )
 
-                    # Step 5: Save & Exit
                     await save_and_exit(page)
                     success = True
                     break
@@ -624,7 +559,6 @@ DATA TO FILL:
                 print(f"\n  ✗ Entry {i}: FAILED — {failure[:200]}")
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
 
-        # ── Summary ──────────────────────────────────────────────────────────
         print("\n" + "=" * 70)
         print("SUBMISSION SUMMARY")
         print("=" * 70)
