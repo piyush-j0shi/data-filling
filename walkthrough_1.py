@@ -23,6 +23,10 @@ FORM_DATA_FILE = "form_data.json"
 APP_URL = os.environ.get("APP_URL", "https://your-public-ngrok-url.ngrok-free.app")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
+MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "groq")
+
+if not os.environ.get("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = "your-api-key-here" 
 
 _page_holder: dict[str, Page | None] = {"page": None}
 
@@ -33,6 +37,25 @@ def get_page() -> Page:
     if _page_holder["page"] is None:
         raise RuntimeError("Browser session not active. Call set_page first.")
     return _page_holder["page"]
+
+def initialize_model(model_provider: str = MODEL_PROVIDER):
+    provider = model_provider.lower()
+
+    if provider == "groq":
+        return init_chat_model(
+            model="llama-3.3-70b-versatile",
+            model_provider="groq"
+        )
+
+    elif provider == "openai":
+        if not os.getenv("OPENAI_API_KEY"):
+            raise EnvironmentError("OPENAI_API_KEY is not set")
+
+        model_name = os.getenv("MODEL_NAME", "openai:gpt-4o")
+        return init_chat_model(model_name)
+
+    else:
+        raise ValueError(f"Unsupported model provider: {provider}")
 
 _CLICK_SUGGESTION_JS = """() => {
     const sels = [
@@ -266,7 +289,7 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 def create_automation_agent():
-    llm = init_chat_model(model="llama-3.3-70b-versatile", model_provider="groq")
+    llm = initialize_model()
     tools = [fill_field, type_and_select, select_option, fill_ui_select, add_diagnosis, done_filling]
 
     workflow = StateGraph(AgentState)
