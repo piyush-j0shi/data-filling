@@ -20,6 +20,7 @@ from bedrock_agentcore.tools.browser_client import browser_session
 load_dotenv()
 
 FORM_DATA_FILE = "form_data.json"
+PROCESSED_FILE = "processed_entries.json"
 APP_URL = os.environ.get("APP_URL", "https://your-public-ngrok-url.ngrok-free.app")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
@@ -30,14 +31,9 @@ if "your-public-ngrok-url" in APP_URL:
 if "your-bedrock-browser-id" in BROWSER_ID:
     raise ValueError("BROWSER_ID is not configured. Set the BROWSER_ID environment variable.")
 
-SERVICE_FIELD_KEYS = {
-    "service_code", "service_units", "dx_ptrs",
-    "modifier_1", "modifier_2", "modifier_3", "modifier_4",
-    "unit_charge",
-}
 
-if not os.environ.get("OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = "your-api-key-here" 
+if MODEL_PROVIDER == "openai" and not os.environ.get("OPENAI_API_KEY"):
+    raise ValueError("OPENAI_API_KEY is not configured. Set the OPENAI_API_KEY environment variable.")
 
 _page_holder: dict[str, Page | None] = {"page": None}
 
@@ -414,8 +410,20 @@ def create_automation_agent():
 async def run_phase(graph, messages, phase_name, recursion_limit=50):
     print(f"\n{phase_name}")
     print(f"{'─' * 60}")
-    result = await graph.ainvoke({"messages": messages}, {"recursion_limit": recursion_limit})
-    return list(result["messages"])
+    collected = []
+    try:
+        async for chunk in graph.astream(
+            {"messages": messages},
+            {"recursion_limit": recursion_limit},
+            stream_mode="values",
+        ):
+            if "messages" in chunk:
+                collected = chunk["messages"]
+        return collected
+    except Exception:
+        if collected:
+            return collected 
+        raise
 
 
 async def login(page: Page):
@@ -518,6 +526,22 @@ async def _get_services_dump(page: Page) -> str:
             // Exclude them so the LLM doesn't confuse them with the editable fields.
             const excludedIds = new Set(['cptCodeSelect']);
 
+            // Walk up the DOM to find the nearest visible label for an element.
+            // This gives the LLM a human-readable name to match against JSON keys.
+            function findLabel(el) {
+                if (el.id) {
+                    const lbl = document.querySelector('label[for="' + el.id + '"]');
+                    if (lbl) return lbl.textContent.trim();
+                }
+                let node = el.parentElement;
+                for (let i = 0; i < 5 && node; i++) {
+                    const lbl = node.querySelector('label, .control-label');
+                    if (lbl && lbl.textContent.trim()) return lbl.textContent.trim();
+                    node = node.parentElement;
+                }
+                return '';
+            }
+
             // ui-select containers relevant to the service line
             document.querySelectorAll('.ui-select-container').forEach(el => {
                 const ngModel = el.getAttribute('ng-model') || '';
@@ -528,6 +552,7 @@ async def _get_services_dump(page: Page) -> str:
                 lines.push('UI-SELECT: ' + JSON.stringify({
                     id: id,
                     'ng-model': ngModel,
+                    label: findLabel(el),
                     placeholder: placeholder ? placeholder.textContent.trim() : ''
                 }));
             });
@@ -543,6 +568,7 @@ async def _get_services_dump(page: Page) -> str:
                     id: id,
                     name: name,
                     'ng-model': ngModel,
+                    label: findLabel(el),
                     placeholder: el.placeholder || ''
                 }));
             });
@@ -589,7 +615,7 @@ MAX_RETRIES = 1
 def _any_field_filled(messages) -> bool:
     """Return True only if at least one fill tool call returned a non-failure result."""
     fill_tools = {"fill_field", "type_and_select", "select_option",
-                  "fill_ui_select", "add_diagnosis", "fill_service_code"}
+                  "fill_ui_select", "add_diagnosis"}
     for m in messages:
         if getattr(m, 'name', '') in fill_tools:
             content = getattr(m, 'content', '') or ''
@@ -616,6 +642,7 @@ def _normalize_diagnoses(raw) -> list[str]:
     return []
 
 
+
 async def run_agent():
     try:
         with open(FORM_DATA_FILE, "r") as f:
@@ -623,6 +650,13 @@ async def run_agent():
     except FileNotFoundError:
         print(f"Error: {FORM_DATA_FILE} not found.")
         return
+
+    try:
+        with open(PROCESSED_FILE, "r") as f:
+            completed_indices = set(json.load(f))
+        print(f"Resuming: {len(completed_indices)} entries already processed\n")
+    except FileNotFoundError:
+        completed_indices = set()
 
     print(f"Loaded {len(form_data)} bill entries to submit\n")
     graph = create_automation_agent()
@@ -635,6 +669,11 @@ async def run_agent():
         results = []
 
         for i, entry in enumerate(form_data, 1):
+            if i in completed_indices:
+                print(f"  Skipping entry {i}/{len(form_data)} (already processed)")
+                results.append({"entry": i, "data": entry, "status": "skipped"})
+                continue
+
             fields_display = ', '.join(f'{k}="{v}"' for k, v in entry.items())
             print(f"{'─' * 80}")
             print(f"BILL ENTRY {i}/{len(form_data)}")
@@ -644,10 +683,9 @@ async def run_agent():
             success = False
             failure = ""
 
-            bill_fields = {k: v for k, v in entry.items()
-                           if k != "bill_type" and k not in SERVICE_FIELD_KEYS}
-            service_fields = {k: v for k, v in entry.items()
-                              if k in SERVICE_FIELD_KEYS}
+            keys = list(entry.keys())
+            split_idx = keys.index("diagnoses") + 1 if "diagnoses" in keys else len(keys)
+            bill_fields = {k: entry[k] for k in keys[:split_idx] if k != "bill_type"}
 
             if "diagnoses" in bill_fields:
                 diag_list = _normalize_diagnoses(bill_fields["diagnoses"])
@@ -668,8 +706,10 @@ async def run_agent():
                     print(f"  [Phase 1] Navigation attempt {attempt + 1} failed: {e}")
 
             if not navigated:
+                await page.screenshot(path=f"failure_entry_{i}.png", full_page=True)
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
                 print(f"\n  ✗ Entry {i}: FAILED (navigation) — {failure[:200]}")
+                print(f"  Screenshot saved to failure_entry_{i}.png")
                 continue
 
             bill_created = False
@@ -684,13 +724,22 @@ FIELDS REFERENCE:
 DATA TO FILL:
 {bill_fields_str}"""
 
+            fill_messages = []
             for attempt in range(1 + MAX_RETRIES):
                 try:
                     if attempt > 0:
                         print(f"  [Phase 2] Retrying bill fields (attempt {attempt + 1})...")
 
+                    input_msgs = (
+                        [("user", fill_msg)] if attempt == 0 or not fill_messages
+                        else fill_messages + [("user",
+                            "An error interrupted the previous attempt. "
+                            "Review the tool calls above to see what was already filled. "
+                            "Retry only the failed tool and complete any remaining fields.")]
+                    )
+
                     fill_messages = await run_phase(
-                        graph, [("user", fill_msg)],
+                        graph, input_msgs,
                         f"Fill Bill Fields (Entry {i})"
                     )
 
@@ -709,11 +758,14 @@ DATA TO FILL:
                     print(f"  [Phase 2] Bill fields attempt {attempt + 1} failed: {e}")
 
             if not bill_created:
+                await page.screenshot(path=f"failure_entry_{i}.png", full_page=True)
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
                 print(f"\n  ✗ Entry {i}: FAILED (bill fields) — {failure[:200]}")
+                print(f"  Screenshot saved to failure_entry_{i}.png")
                 continue
 
-            svc_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in service_fields.items())
+            phase3_fields = {k: entry[k] for k in keys[split_idx:]}
+            svc_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in phase3_fields.items())
             svc_msg = f"""You are on the Services Rendered form. Below is a live dump of every
 interactive element currently on the page. Use it to identify the correct
 selector for each field in DATA TO FILL, then fill it with the right tool.
@@ -733,17 +785,26 @@ DATA TO FILL:
 
 Fill ONLY the fields listed in DATA TO FILL. Call done_filling() when all are filled."""
 
+            svc_messages = []
             for attempt in range(1 + MAX_RETRIES):
                 try:
                     if attempt > 0:
                         print(f"  [Phase 3] Retrying services (attempt {attempt + 1})...")
 
+                    input_msgs = (
+                        [("user", svc_msg)] if attempt == 0 or not svc_messages
+                        else svc_messages + [("user",
+                            "An error interrupted the previous attempt. "
+                            "Review the tool calls above to see what was already filled. "
+                            "Retry only the failed tool and complete any remaining fields.")]
+                    )
+
                     svc_messages = await run_phase(
-                        graph, [("user", svc_msg)],
+                        graph, input_msgs,
                         f"Fill Services Rendered (Entry {i})"
                     )
 
-                    if service_fields and not _any_field_filled(svc_messages):
+                    if phase3_fields and not _any_field_filled(svc_messages):
                         failure = "LLM did not fill any service fields"
                         print(f"  [Phase 3] Attempt {attempt + 1}: no service fields filled, retrying...")
                         continue
@@ -757,10 +818,15 @@ Fill ONLY the fields listed in DATA TO FILL. Call done_filling() when all are fi
                     print(f"  [Phase 3] Services attempt {attempt + 1} failed: {e}")
 
             if success:
+                completed_indices.add(i)
+                with open(PROCESSED_FILE, "w") as f:
+                    json.dump(list(completed_indices), f)
                 print(f"\n  ✓ Entry {i}: SUCCESS")
                 results.append({"entry": i, "data": entry, "status": "success"})
             else:
+                await page.screenshot(path=f"failure_entry_{i}.png", full_page=True)
                 print(f"\n  ✗ Entry {i}: FAILED — {failure[:200]}")
+                print(f"  Screenshot saved to failure_entry_{i}.png")
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
 
         print("\n" + "=" * 70)

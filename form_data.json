@@ -8,7 +8,7 @@
     "primary_provider": "Bakos, Matthew, MD",
     "referring_provider": "TEST, TEST",
     "reportable_reason": "Medical Non-emergency",
-    "diagnoses": "008",
+    "diagnoses": "008, 008.0, 008.01",
     "service_code": "00100",
     "service_units": "5"
   }
