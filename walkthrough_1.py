@@ -779,10 +779,8 @@ DATA TO FILL:
                     print(f"  [Phase 2] Bill fields attempt {attempt + 1} failed: {e}")
 
             if not bill_created:
-                await page.screenshot(path=f"failure_entry_{i}.png", full_page=True)
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
                 print(f"\n  ✗ Entry {i}: FAILED (bill fields) — {failure[:200]}")
-                print(f"  Screenshot saved to failure_entry_{i}.png")
                 continue
 
             phase3_fields = {k: entry[k] for k in keys[split_idx:]}
