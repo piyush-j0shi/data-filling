@@ -7,7 +7,7 @@ from typing_extensions import TypedDict
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, START, END
@@ -20,7 +20,6 @@ from bedrock_agentcore.tools.browser_client import browser_session
 load_dotenv()
 
 FORM_DATA_FILE = "form_data.json"
-PROCESSED_FILE = "processed_entries.json"
 APP_URL = os.environ.get("APP_URL", "https://your-public-ngrok-url.ngrok-free.app")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
@@ -112,7 +111,15 @@ async def fill_field(selector: str, value: str) -> str:
     try:
         await page.wait_for_selector(selector, timeout=10000, state="visible")
         await page.locator(selector).scroll_into_view_if_needed(timeout=3000)
-        await page.fill(selector, value, timeout=10000)
+        try:
+            await page.fill(selector, value, timeout=10000)
+        except Exception:
+            # Angular inputs sometimes time out on fill's internal state-settle
+            # confirmation even though the value was already written — verify
+            # before treating it as a failure.
+            actual = await page.locator(selector).input_value()
+            if actual != value:
+                raise
         await page.wait_for_timeout(200)
         return f"Filled {selector} with '{value}'"
     except Exception as e:
@@ -301,6 +308,14 @@ def done_filling() -> str:
     return "DONE"
 
 
+SERVICES_FIELDS = """[Form: servicesRendered] — fill in this exact numbered order, ONE tool call per turn:
+1.  [fill_ui_select]   "Service Code (CPT)"  → #cptQuickKeySelect
+2.  [fill_field]       "Units"               → input[name="serviceLineUnits1"]
+3.  [fill_field]       "Unit Charge"         → input[name="serviceLineUnitCharge1"]
+4.  [fill_dx_pointers] "DX Pointers"         → dx_ptrs=<value>
+5.  [done_filling]     — call after ALL present fields are filled"""
+
+
 CREATE_BILL_FIELDS = """[Form: createBillForm] — fill in this exact numbered order, ONE tool call per turn:
 1.  [type_and_select] "Patient Name"       → #emaPatientQuickSearch
 2.  [fill_ui_select]  "Service Location"   → #placeOfServiceSelect
@@ -372,10 +387,35 @@ def create_automation_agent():
 
     async def call_tools(state):
         result = await tool_node.ainvoke(state)
-        for msg in result.get("messages", []):
+        messages_to_add = list(result.get("messages", []))
+
+        for msg in messages_to_add:
             content = msg.content if hasattr(msg, 'content') else str(msg)
             print(f"  → {content[:150]}")
-        return result
+
+        # If the last tool returned a failure, inject a targeted retry instruction
+        # so the LLM corrects just that call instead of skipping ahead or giving up.
+        if messages_to_add:
+            last_content = getattr(messages_to_add[-1], 'content', '') or ''
+            is_failure = (
+                last_content.startswith("Failed") or
+                last_content.startswith("No ")
+            )
+            if is_failure:
+                failed_tool = ""
+                for m in reversed(state["messages"]):
+                    if hasattr(m, 'tool_calls') and m.tool_calls:
+                        failed_tool = m.tool_calls[-1].get('name', '')
+                        break
+                messages_to_add.append(HumanMessage(content=(
+                    f"'{failed_tool}' just failed: \"{last_content[:200]}\". "
+                    "Do NOT call done_filling yet. Retry that same tool once with "
+                    "corrected arguments (e.g. a different selector, shorter search "
+                    "text, or adjusted value) to fix the issue. "
+                    "Only move to the next field if it fails a second time."
+                )))
+
+        return {"messages": messages_to_add}
 
     def route_after_agent(state):
         """If the agent called done_filling, still execute it (so the tool runs),
@@ -651,13 +691,6 @@ async def run_agent():
         print(f"Error: {FORM_DATA_FILE} not found.")
         return
 
-    try:
-        with open(PROCESSED_FILE, "r") as f:
-            completed_indices = set(json.load(f))
-        print(f"Resuming: {len(completed_indices)} entries already processed\n")
-    except FileNotFoundError:
-        completed_indices = set()
-
     print(f"Loaded {len(form_data)} bill entries to submit\n")
     graph = create_automation_agent()
 
@@ -669,11 +702,6 @@ async def run_agent():
         results = []
 
         for i, entry in enumerate(form_data, 1):
-            if i in completed_indices:
-                print(f"  Skipping entry {i}/{len(form_data)} (already processed)")
-                results.append({"entry": i, "data": entry, "status": "skipped"})
-                continue
-
             fields_display = ', '.join(f'{k}="{v}"' for k, v in entry.items())
             print(f"{'─' * 80}")
             print(f"BILL ENTRY {i}/{len(form_data)}")
@@ -766,24 +794,20 @@ DATA TO FILL:
 
             phase3_fields = {k: entry[k] for k in keys[split_idx:]}
             svc_fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in phase3_fields.items())
-            svc_msg = f"""You are on the Services Rendered form. Below is a live dump of every
-interactive element currently on the page. Use it to identify the correct
-selector for each field in DATA TO FILL, then fill it with the right tool.
+            svc_msg = f"""You are on the Services Rendered form.
 
-TOOL REFERENCE:
-  ui-select with id      → fill_ui_select(container_selector='#<id>', text=<value>)
-  ui-select without id   → fill_ui_select(container_selector='[ng-model="<ng-model>"]', text=<value>)
-  input/select by name   → fill_field(selector='input[name="<name>"]', value=<value>)
-  input/select by id     → fill_field(selector='#<id>', value=<value>)
-  DX pointer slots       → fill_dx_pointers(dx_ptrs=<value>)
+FIELDS REFERENCE (primary — use these exact tools and selectors):
+{SERVICES_FIELDS}
 
-PAGE ELEMENTS:
+PAGE ELEMENTS (fallback — use only for fields not listed in FIELDS REFERENCE):
 {page_dump}
 
 DATA TO FILL:
 {svc_fields_str}
 
-Fill ONLY the fields listed in DATA TO FILL. Call done_filling() when all are filled."""
+Fill EVERY field present in DATA TO FILL using the tool and selector from FIELDS REFERENCE.
+Match each DATA TO FILL key to its closest entry in FIELDS REFERENCE by name.
+Call done_filling() only after ALL fields in DATA TO FILL have been filled."""
 
             svc_messages = []
             for attempt in range(1 + MAX_RETRIES):
@@ -818,9 +842,6 @@ Fill ONLY the fields listed in DATA TO FILL. Call done_filling() when all are fi
                     print(f"  [Phase 3] Services attempt {attempt + 1} failed: {e}")
 
             if success:
-                completed_indices.add(i)
-                with open(PROCESSED_FILE, "w") as f:
-                    json.dump(list(completed_indices), f)
                 print(f"\n  ✓ Entry {i}: SUCCESS")
                 results.append({"entry": i, "data": entry, "status": "success"})
             else:
