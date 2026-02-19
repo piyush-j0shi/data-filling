@@ -363,8 +363,8 @@ def create_automation_agent():
 
     async def call_model(state):
         all_msgs = list(state["messages"])
-        if len(all_msgs) > 14:
-            all_msgs = all_msgs[:1] + all_msgs[-12:]
+        if len(all_msgs) > 60:
+            all_msgs = all_msgs[:1] + all_msgs[-58:]
 
         response = await llm.bind_tools(tools, parallel_tool_calls=False).ainvoke(
             [SystemMessage(content=SYSTEM_PROMPT)] + all_msgs
