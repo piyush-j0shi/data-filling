@@ -114,9 +114,6 @@ async def fill_field(selector: str, value: str) -> str:
         try:
             await page.fill(selector, value, timeout=10000)
         except Exception:
-            # Angular inputs sometimes time out on fill's internal state-settle
-            # confirmation even though the value was already written — verify
-            # before treating it as a failure.
             actual = await page.locator(selector).input_value()
             if actual != value:
                 raise
@@ -393,8 +390,6 @@ def create_automation_agent():
             content = msg.content if hasattr(msg, 'content') else str(msg)
             print(f"  → {content[:150]}")
 
-        # If the last tool returned a failure, inject a targeted retry instruction
-        # so the LLM corrects just that call instead of skipping ahead or giving up.
         if messages_to_add:
             last_content = getattr(messages_to_add[-1], 'content', '') or ''
             is_failure = (
@@ -734,10 +729,8 @@ async def run_agent():
                     print(f"  [Phase 1] Navigation attempt {attempt + 1} failed: {e}")
 
             if not navigated:
-                await page.screenshot(path=f"failure_entry_{i}.png", full_page=True)
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
                 print(f"\n  ✗ Entry {i}: FAILED (navigation) — {failure[:200]}")
-                print(f"  Screenshot saved to failure_entry_{i}.png")
                 continue
 
             bill_created = False
