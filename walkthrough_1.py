@@ -836,9 +836,7 @@ Call done_filling() only after ALL fields in DATA TO FILL have been filled."""
                 print(f"\n  ✓ Entry {i}: SUCCESS")
                 results.append({"entry": i, "data": entry, "status": "success"})
             else:
-                await page.screenshot(path=f"failure_entry_{i}.png", full_page=True)
                 print(f"\n  ✗ Entry {i}: FAILED — {failure[:200]}")
-                print(f"  Screenshot saved to failure_entry_{i}.png")
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
 
         print("\n" + "=" * 70)
