@@ -97,6 +97,16 @@ async def _run_with_retry(
     return messages, False, failure
 
 
+def _log_progress(results: list[dict], total: int) -> None:
+    succeeded = sum(1 for r in results if r["status"] == "success")
+    failed = sum(1 for r in results if r["status"] == "failed")
+    remaining = total - len(results)
+    logger.info(
+        "Progress [%d/%d] — Succeeded: %d | Failed: %d | Remaining: %d",
+        len(results), total, succeeded, failed, remaining,
+    )
+
+
 def _log_summary(results: list[dict]) -> None:
     successful = [r for r in results if r["status"] == "success"]
     failed = [r for r in results if r["status"] == "failed"]
@@ -129,10 +139,13 @@ async def run_agent() -> list[dict]:
         await login(page)
         results: list[dict] = []
 
+        total = len(form_data)
         for i, entry in enumerate(form_data, 1):
             logger.info("%s", "─" * 80)
-            logger.info("BILL ENTRY %d/%d — %s", i, len(form_data),
-                        ', '.join(f'{k}="{v}"' for k, v in entry.items()))
+            logger.info(
+                "BILL ENTRY %d/%d — %s",
+                i, total, ', '.join(f'{k}="{v}"' for k, v in entry.items()),
+            )
             logger.info("%s", "─" * 80)
 
             keys = list(entry.keys())
@@ -158,6 +171,7 @@ async def run_agent() -> list[dict]:
             if not navigated:
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
                 logger.error("  Entry %d: FAILED (navigation) — %s", i, failure[:200])
+                _log_progress(results, total)
                 continue
 
             _, bill_created, failure = await _run_with_retry(
@@ -170,6 +184,7 @@ async def run_agent() -> list[dict]:
             if not bill_created:
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
                 logger.error("  Entry %d: FAILED (bill fields) — %s", i, failure[:200])
+                _log_progress(results, total)
                 continue
 
             await click_create_bill(page)
@@ -187,8 +202,9 @@ async def run_agent() -> list[dict]:
                 logger.info("  Entry %d: SUCCESS", i)
                 results.append({"entry": i, "data": entry, "status": "success"})
             else:
-                logger.error("  Entry %d: FAILED — %s", i, failure[:200])
+                logger.error("  Entry %d: FAILED (services) — %s", i, failure[:200])
                 results.append({"entry": i, "data": entry, "status": "failed", "reason": failure})
+            _log_progress(results, total)
 
         _log_summary(results)
         await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
