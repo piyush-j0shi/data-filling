@@ -1,43 +1,12 @@
-import json
-import subprocess
-import sys
-from pathlib import Path
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import asyncio
+import logging
 
-app = FastAPI()
+from agent import run_agent
 
-FORM_DATA_FILE = Path(__file__).parent / "form_data.json"
-WALKTHROUGH_SCRIPT = Path(__file__).parent / "walkthrough_1.py"
-
-@app.post("/run")
-async def run_walkthrough(file: UploadFile = File(...)):
-    if not file.filename.endswith(".json"):
-        raise HTTPException(status_code=400, detail="Only .json files are accepted")
-
-    contents = await file.read()
-    try:
-        data = json.loads(contents)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON in uploaded file")
-
-    FORM_DATA_FILE.write_text(json.dumps(data, indent=2))
-
-    result = subprocess.run(
-        [sys.executable, str(WALKTHROUGH_SCRIPT)],
-        capture_output=True,
-        text=True,
-        cwd=str(WALKTHROUGH_SCRIPT.parent),
-    )
-
-    if result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "Walkthrough script failed", "stderr": result.stderr},
-        )
-
-    return {"status": "success", "output": result.stdout}
-
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    asyncio.run(run_agent())
