@@ -148,9 +148,13 @@ async def run_agent() -> list[dict]:
             )
             logger.info("%s", "─" * 80)
 
+            _OPTIONAL_BILL_FIELDS = {"referring_provider", "reportable_reason"}
             keys = list(entry.keys())
             split_idx = keys.index("diagnoses") + 1 if "diagnoses" in keys else len(keys)
-            bill_fields = {k: entry[k] for k in keys[:split_idx] if k != "bill_type"}
+            bill_fields = {
+                k: entry[k] for k in keys[:split_idx]
+                if k != "bill_type" and (k not in _OPTIONAL_BILL_FIELDS or entry[k])
+            }
             if "diagnoses" in bill_fields:
                 bill_fields["diagnoses"] = json.dumps(_normalize_diagnoses(bill_fields["diagnoses"]))
             bill_type = entry.get("bill_type", "Patient")

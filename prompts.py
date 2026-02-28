@@ -12,8 +12,8 @@ CREATE_BILL_FIELDS = """[Form: createBillForm] — fill in this exact numbered o
 3.  [fill_ui_select]  "Primary Biller"     → #renderingProviderSelect
 4.  [fill_field]      "Date of Service"    → input#dateOfServiceInput
 5.  [fill_ui_select]  "Primary Provider"   → #primaryProviderSelect
-6.  [fill_ui_select]  "Referring Provider" → #referringProviderSelect
-7.  [select_option]   "Reportable Reason"  → #reportableReasonSelect
+6.  [fill_ui_select]  "Referring Provider" → #referringProviderSelect        (OPTIONAL — skip if not in DATA TO FILL)
+7.  [select_option]   "Reportable Reason"  → #reportableReasonSelect         (OPTIONAL — skip if not in DATA TO FILL; leave at default)
 8.  [add_diagnosis]   "Diagnoses"          → call add_diagnosis(text=<value>) for EACH diagnosis entry
                                              If diagnoses is a comma-separated list, split it and call
                                              add_diagnosis once per item.
