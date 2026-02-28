@@ -1,3 +1,4 @@
+import functools
 import logging
 
 from typing import Annotated, Sequence
@@ -21,11 +22,13 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
+@functools.cache
 def create_automation_agent():
+    """Build and compile the LangGraph agent. Cached — model is initialised only once."""
     llm = initialize_model()
     tool_node = ToolNode(AGENT_TOOLS)
 
-    async def call_model(state):
+    async def call_model(state: AgentState) -> dict:
         all_msgs = list(state["messages"])
         if len(all_msgs) > 60:
             all_msgs = all_msgs[:1] + all_msgs[-58:]
@@ -40,16 +43,16 @@ def create_automation_agent():
                 f"{k}={repr(v[:60]) if isinstance(v, str) else v}"
                 for k, v in tc.get('args', {}).items()
             )
-            logger.debug("Tool: %s(%s)", tc.get('name'), args_str)
+            logger.info("  Tool call: %s(%s)", tc.get('name'), args_str)
 
         return {"messages": [response]}
 
-    async def call_tools(state):
+    async def call_tools(state: AgentState) -> dict:
         result = await tool_node.ainvoke(state)
         messages_to_add = list(result.get("messages", []))
 
         for msg in messages_to_add:
-            logger.debug("  → %s", (msg.content if hasattr(msg, 'content') else str(msg))[:150])
+            logger.info("  → %s", (msg.content if hasattr(msg, 'content') else str(msg))[:150])
 
         if messages_to_add:
             last_content = getattr(messages_to_add[-1], 'content', '') or ''
@@ -69,7 +72,7 @@ def create_automation_agent():
 
         return {"messages": messages_to_add}
 
-    def route_after_agent(state):
+    def route_after_agent(state: AgentState) -> str:
         for msg in reversed(state["messages"]):
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 return "tools"
@@ -77,7 +80,7 @@ def create_automation_agent():
                 return END
         return END
 
-    def route_after_tools(state):
+    def route_after_tools(state: AgentState) -> str:
         for msg in reversed(state["messages"]):
             if hasattr(msg, 'content') and msg.content == "DONE":
                 return END
@@ -94,10 +97,10 @@ def create_automation_agent():
     return workflow.compile()
 
 
-async def run_phase(graph, messages, phase_name, recursion_limit=50):
+async def run_phase(graph, messages: list, phase_name: str, recursion_limit: int = 50) -> list:
     logger.info("%s", phase_name)
     logger.info("%s", "─" * 60)
-    collected = []
+    collected: list = []
     try:
         async for chunk in graph.astream(
             {"messages": messages},

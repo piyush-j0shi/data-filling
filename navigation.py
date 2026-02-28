@@ -1,3 +1,4 @@
+import os
 import logging
 
 from playwright.async_api import Page
@@ -56,8 +57,7 @@ _SERVICES_DUMP_JS = """() => {
 }"""
 
 
-async def login(page: Page):
-    import os
+async def login(page: Page) -> None:
     username = os.environ.get("LOGIN_USERNAME", "admin")
     password = os.environ.get("LOGIN_PASSWORD", "admin")
 
@@ -85,7 +85,7 @@ async def login(page: Page):
     logger.info("Logged in successfully")
 
 
-async def navigate_to_create_bill(page: Page, bill_type: str):
+async def navigate_to_create_bill(page: Page, bill_type: str) -> None:
     financials_url = (APP_URL.rstrip("/").rsplit("/ema", 1)[0]
                       + "/ema/practice/financial/Financials.action#/home/bills")
     logger.info("  Navigating to: %s", financials_url)
@@ -139,7 +139,7 @@ async def get_services_dump(page: Page) -> str:
         return msg
 
 
-async def click_create_bill(page: Page):
+async def click_create_bill(page: Page) -> None:
     try:
         await page.click(".modal-content button:has-text('Create Bill')", timeout=10000)
     except Exception:
@@ -148,7 +148,7 @@ async def click_create_bill(page: Page):
     logger.info("  Clicked Create Bill")
 
 
-async def save_and_exit(page: Page):
+async def save_and_exit(page: Page) -> None:
     for selector in [
         "button:has-text('Save & Exit')",
         "button:has-text('Post Charges & Close')",
