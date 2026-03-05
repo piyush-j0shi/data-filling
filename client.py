@@ -37,4 +37,5 @@ async def get_bedrock_browser(aws_region: str, browser_id: str):
             finally:
                 await page.close()
                 await browser.close()
+                _page_holder["page"] = None
                 logger.info("Browser session ended")

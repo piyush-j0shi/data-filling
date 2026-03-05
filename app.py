@@ -52,8 +52,7 @@ async def run_walkthrough(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="JSON must be a list of bill entry objects")
 
     FORM_DATA_FILE.write_text(json.dumps(data, indent=2))
-    logger.info("Saved form data (%d entries), starting execution",
-                len(data) if isinstance(data, list) else 1)
+    logger.info("Saved form data (%d entries), starting execution", len(data))
 
     try:
         results = await asyncio.wait_for(run_agent(), timeout=EXECUTION_TIMEOUT)

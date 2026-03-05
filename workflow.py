@@ -101,14 +101,11 @@ async def run_phase(graph, messages: list, phase_name: str, recursion_limit: int
     logger.info("%s", phase_name)
     logger.info("%s", "─" * 60)
     collected: list = []
-    try:
-        async for chunk in graph.astream(
-            {"messages": messages},
-            {"recursion_limit": recursion_limit},
-            stream_mode="values",
-        ):
-            if "messages" in chunk:
-                collected = chunk["messages"]
-        return collected
-    except Exception:
-        raise
+    async for chunk in graph.astream(
+        {"messages": messages},
+        {"recursion_limit": recursion_limit},
+        stream_mode="values",
+    ):
+        if "messages" in chunk:
+            collected = chunk["messages"]
+    return collected

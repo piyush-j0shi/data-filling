@@ -40,8 +40,6 @@ def initialize_model(model_provider: str = MODEL_PROVIDER):
         return init_chat_model(model="llama-3.3-70b-versatile", model_provider="groq")
 
     if provider == "openai":
-        if not os.getenv("OPENAI_API_KEY"):
-            raise EnvironmentError("OPENAI_API_KEY is not set")
         return init_chat_model(os.getenv("MODEL_NAME", "openai:gpt-4o"))
 
     raise ValueError(f"Unsupported model provider: {provider}")
