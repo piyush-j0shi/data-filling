@@ -2,8 +2,8 @@ import json
 import logging
 from collections.abc import Callable
 
-from client import get_bedrock_browser, set_page
-from config import FORM_DATA_FILE, AWS_REGION, BROWSER_ID, SCREENSHOT_PATH, validate_config
+from client import get_bedrock_browser, set_page, save_browser_profile
+from config import FORM_DATA_FILE, AWS_REGION, BROWSER_ID, BROWSER_PROFILE_ID, SCREENSHOT_PATH, validate_config
 from prompts import CREATE_BILL_FIELDS, SERVICES_FIELDS
 from workflow import create_automation_agent, run_phase
 from navigation import login, navigate_to_create_bill, get_services_dump, click_create_bill, save_and_exit
@@ -135,9 +135,12 @@ async def run_agent() -> list[dict]:
     logger.info("Loaded %d bill entries to submit", len(form_data))
     graph = create_automation_agent()
 
-    async with get_bedrock_browser(AWS_REGION, BROWSER_ID) as page:
+    async with get_bedrock_browser(AWS_REGION, BROWSER_ID, profile_id=BROWSER_PROFILE_ID or None) as page:
         set_page(page)
-        await login(page)
+        logged_in_fresh = await login(page)
+        if BROWSER_PROFILE_ID and logged_in_fresh:
+            save_browser_profile(BROWSER_PROFILE_ID)
+            logger.info("Auth state saved to profile: %s", BROWSER_PROFILE_ID)
         results: list[dict] = []
 
         total = len(form_data)

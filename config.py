@@ -18,6 +18,7 @@ SCREENSHOT_PATH = str(_WRITABLE_DIR / "final_result.png")
 APP_URL = os.environ.get("APP_URL", "https://your-public-ngrok-url.ngrok-free.app")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
+BROWSER_PROFILE_ID = os.environ.get("BROWSER_PROFILE_ID", "")
 MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "groq")
 
 

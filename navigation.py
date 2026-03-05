@@ -57,17 +57,26 @@ _SERVICES_DUMP_JS = """() => {
 }"""
 
 
-async def login(page: Page) -> None:
+async def login(page: Page) -> bool:
     username = os.environ.get("LOGIN_USERNAME", "admin")
     password = os.environ.get("LOGIN_PASSWORD", "admin")
 
-    logger.info("Navigating to app & selecting Practice Staff")
+    logger.info("Navigating to app & checking auth state")
     await page.goto(APP_URL, wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_timeout(2000)
+
+    try:
+        await page.wait_for_selector(
+            "input[name='redirectToNonPatientLoginPage']", timeout=5000, state="visible"
+        )
+    except Exception:
+        logger.info("Login page not shown — already authenticated via profile")
+        return False
+
+    logger.info("Login page detected — logging in")
     await page.click("input[name='redirectToNonPatientLoginPage']", timeout=10000)
     await page.wait_for_timeout(2000)
 
-    logger.info("Logging in")
     await page.fill("#username", username, timeout=5000)
     await page.fill("#password", password, timeout=5000)
     await page.click("button[name='login']", timeout=5000)
@@ -83,6 +92,7 @@ async def login(page: Page) -> None:
         pass
 
     logger.info("Logged in successfully")
+    return True
 
 
 async def navigate_to_create_bill(page: Page, bill_type: str) -> None:
