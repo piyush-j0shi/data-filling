@@ -51,6 +51,17 @@ async def run_walkthrough(file: UploadFile = File(...)):
     if not isinstance(data, list):
         raise HTTPException(status_code=400, detail="JSON must be a list of bill entry objects")
 
+    for entry in data:
+        diagnoses = entry.get("diagnoses")
+        if isinstance(diagnoses, list):
+            for dx in diagnoses:
+                dx_str = str(dx).strip()
+                if not (1 < len(dx_str) <= 12):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Diagnosis '{dx_str}' must be between 2 and 12 characters",
+                    )
+
     FORM_DATA_FILE.write_text(json.dumps(data, indent=2))
     logger.info("Saved form data (%d entries), starting execution", len(data))
 
