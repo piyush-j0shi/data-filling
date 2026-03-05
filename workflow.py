@@ -56,7 +56,7 @@ def create_automation_agent():
 
         if messages_to_add:
             last_content = getattr(messages_to_add[-1], 'content', '') or ''
-            if last_content.startswith("Failed") or last_content.startswith("No "):
+            if last_content.startswith(("Failed", "No ")) or "no suggestion" in last_content.lower():
                 failed_tool = next(
                     (m.tool_calls[-1].get('name', '') for m in reversed(state["messages"])
                      if hasattr(m, 'tool_calls') and m.tool_calls),
@@ -111,6 +111,4 @@ async def run_phase(graph, messages: list, phase_name: str, recursion_limit: int
                 collected = chunk["messages"]
         return collected
     except Exception:
-        if collected:
-            return collected
         raise

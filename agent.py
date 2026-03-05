@@ -11,6 +11,7 @@ from navigation import login, navigate_to_create_bill, get_services_dump, click_
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 1
+_OPTIONAL_BILL_FIELDS = {"referring_provider", "reportable_reason"}
 
 _RETRY_MSG = (
     "An error interrupted the previous attempt. "
@@ -148,7 +149,6 @@ async def run_agent() -> list[dict]:
             )
             logger.info("%s", "─" * 80)
 
-            _OPTIONAL_BILL_FIELDS = {"referring_provider", "reportable_reason"}
             keys = list(entry.keys())
             split_idx = keys.index("diagnoses") + 1 if "diagnoses" in keys else len(keys)
             bill_fields = {

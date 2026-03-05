@@ -27,6 +27,8 @@ def validate_config() -> None:
         raise ValueError("APP_URL is not configured. Set the APP_URL environment variable.")
     if "your-bedrock-browser-id" in BROWSER_ID:
         raise ValueError("BROWSER_ID is not configured. Set the BROWSER_ID environment variable.")
+    if MODEL_PROVIDER == "groq" and not os.environ.get("GROQ_API_KEY"):
+        raise ValueError("GROQ_API_KEY is not configured. Set the GROQ_API_KEY environment variable.")
     if MODEL_PROVIDER == "openai" and not os.environ.get("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY is not configured. Set the OPENAI_API_KEY environment variable.")
 
