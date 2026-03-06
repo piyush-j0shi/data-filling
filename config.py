@@ -41,6 +41,6 @@ def initialize_model(model_provider: str = MODEL_PROVIDER):
         return init_chat_model(model="llama-3.3-70b-versatile", model_provider="groq")
 
     if provider == "openai":
-        return init_chat_model(os.getenv("MODEL_NAME", "openai:gpt-4o"))
+        return init_chat_model(model=os.getenv("MODEL_NAME") or "gpt-4o", model_provider="openai")
 
     raise ValueError(f"Unsupported model provider: {provider}")
