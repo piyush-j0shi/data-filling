@@ -57,6 +57,68 @@ _SERVICES_DUMP_JS = """() => {
 }"""
 
 
+async def _verify_login_with_llm(page: Page) -> bool:
+    from config import initialize_model
+    url = page.url
+    title = await page.title()
+    text = (await page.evaluate("() => document.body.innerText"))[:400]
+
+    llm = initialize_model()
+    prompt = (
+        "You are checking whether a web application login succeeded.\n"
+        f"URL: {url}\nPage title: {title}\nVisible text (first 400 chars): {text}\n\n"
+        "Answer with exactly one word: YES if the user is logged into the application, "
+        "NO if they are still on a login, error, or SSO redirect page."
+    )
+    response = await llm.ainvoke(prompt)
+    answer = (response.content if hasattr(response, "content") else str(response)).strip().upper()
+    logger.info("LLM login verification: %s", answer)
+    return answer.startswith("YES")
+
+
+async def _do_login(page: Page, username: str, password: str) -> bool:
+    for sel in [
+        "a:has-text('Continue as Practice Staff')",
+        "button:has-text('Continue as Practice Staff')",
+        "input[name='redirectToNonPatientLoginPage']",
+    ]:
+        try:
+            await page.wait_for_selector(sel, timeout=3000, state="visible")
+            await page.click(sel)
+            await page.wait_for_timeout(2000)
+            break
+        except Exception:
+            continue
+
+    try:
+        await page.wait_for_selector("#username", timeout=10000, state="visible")
+        await page.fill("#username", username, timeout=5000)
+        await page.fill("#password", password, timeout=5000)
+        for btn in ["button[name='login']", "button[type='submit']", "input[type='submit']"]:
+            try:
+                await page.click(btn, timeout=3000)
+                break
+            except Exception:
+                continue
+        await page.wait_for_timeout(3000)
+    except Exception:
+        pass
+
+    try:
+        btn = await page.wait_for_selector("text=Next", timeout=3000)
+        if btn:
+            await btn.click()
+            await page.wait_for_timeout(2000)
+            logger.info("Dismissed survey page")
+    except Exception:
+        pass
+
+    success = await _verify_login_with_llm(page)
+    if not success:
+        logger.warning("LLM reports login did not succeed — may retry")
+    return success
+
+
 async def login(page: Page) -> bool:
     username = os.environ.get("LOGIN_USERNAME", "admin")
     password = os.environ.get("LOGIN_PASSWORD", "admin")
@@ -65,34 +127,14 @@ async def login(page: Page) -> bool:
     await page.goto(APP_URL, wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_timeout(2000)
 
-    try:
-        await page.wait_for_selector(
-            "input[name='redirectToNonPatientLoginPage']", timeout=5000, state="visible"
-        )
-    except Exception:
-        logger.info("Login page not shown — already authenticated via profile")
+    app_domain = APP_URL.split("/")[2]
+    current_url = page.url
+    if app_domain in current_url and "login" not in current_url.lower():
+        logger.info("URL confirms app domain — already authenticated via profile")
         return False
 
-    logger.info("Login page detected — logging in")
-    await page.click("input[name='redirectToNonPatientLoginPage']", timeout=10000)
-    await page.wait_for_timeout(2000)
-
-    await page.fill("#username", username, timeout=5000)
-    await page.fill("#password", password, timeout=5000)
-    await page.click("button[name='login']", timeout=5000)
-    await page.wait_for_timeout(3000)
-
-    try:
-        next_btn = await page.wait_for_selector("text=Next", timeout=3000)
-        if next_btn:
-            await next_btn.click()
-            await page.wait_for_timeout(2000)
-            logger.info("Dismissed survey page")
-    except Exception:
-        pass
-
-    logger.info("Logged in successfully")
-    return True
+    logger.info("Login required (redirected to: %s) — logging in", current_url)
+    return await _do_login(page, username, password)
 
 
 async def navigate_to_create_bill(page: Page, bill_type: str) -> None:
@@ -102,6 +144,15 @@ async def navigate_to_create_bill(page: Page, bill_type: str) -> None:
     await page.goto(financials_url, wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_timeout(4000)
     logger.info("  Current URL after nav: %s", page.url)
+
+    app_domain = APP_URL.split("/")[2]
+    if app_domain not in page.url:
+        logger.warning("  Session expired during navigation — re-authenticating")
+        username = os.environ.get("LOGIN_USERNAME", "admin")
+        password = os.environ.get("LOGIN_PASSWORD", "admin")
+        await _do_login(page, username, password)
+        await page.goto(financials_url, wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(4000)
 
     visible_buttons = await page.evaluate("""() => {
         return [...document.querySelectorAll('button, a')]

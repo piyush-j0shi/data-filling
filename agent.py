@@ -139,6 +139,11 @@ async def run_agent() -> list[dict]:
         set_page(page)
         logged_in_fresh = await login(page)
         if BROWSER_PROFILE_ID and logged_in_fresh:
+            logger.info(
+                "Session was not authenticated via profile (expired or unavailable) — "
+                "logged in with credentials, saving fresh state to profile: %s",
+                BROWSER_PROFILE_ID,
+            )
             save_browser_profile(BROWSER_PROFILE_ID)
             logger.info("Auth state saved to profile: %s", BROWSER_PROFILE_ID)
         results: list[dict] = []

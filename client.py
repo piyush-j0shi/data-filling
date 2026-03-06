@@ -41,15 +41,21 @@ async def get_bedrock_browser(aws_region: str, browser_id: str, profile_id: Opti
 
     if profile_id:
         logger.info("Starting session with profile: %s", profile_id)
-        response = bc.data_plane_client.start_browser_session(
-            browserIdentifier=browser_id,
-            name=f"browser-session-{uuid.uuid4().hex[:8]}",
-            sessionTimeoutSeconds=DEFAULT_SESSION_TIMEOUT,
-            profileConfiguration={"profileIdentifier": profile_id},
-        )
-        bc.identifier = response["browserIdentifier"]
-        bc.session_id = response["sessionId"]
-        logger.info("Session started (with profile): %s", bc.session_id)
+        try:
+            response = bc.data_plane_client.start_browser_session(
+                browserIdentifier=browser_id,
+                name=f"browser-session-{uuid.uuid4().hex[:8]}",
+                sessionTimeoutSeconds=DEFAULT_SESSION_TIMEOUT,
+                profileConfiguration={"profileIdentifier": profile_id},
+            )
+            bc.identifier = response["browserIdentifier"]
+            bc.session_id = response["sessionId"]
+            logger.info("Session started (with profile): %s", bc.session_id)
+        except Exception as e:
+            logger.warning(
+                "Profile session start failed (%s) — falling back to fresh session without profile", e
+            )
+            bc.start(identifier=browser_id)
     else:
         bc.start(identifier=browser_id)
 
