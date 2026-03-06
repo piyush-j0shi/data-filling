@@ -86,6 +86,13 @@ async def select_option(selector: str, value: str) -> str:
     try:
         await page.wait_for_selector(selector, timeout=5000, state="visible")
         try:
+            await page.wait_for_function(
+                f"() => {{ const el = document.querySelector('{selector}'); return el && !el.disabled; }}",
+                timeout=5000,
+            )
+        except Exception:
+            pass
+        try:
             await page.select_option(selector, value=value, timeout=3000)
         except Exception:
             await page.select_option(selector, label=value, timeout=3000)

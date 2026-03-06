@@ -7,18 +7,20 @@ SERVICES_FIELDS = """[Form: servicesRendered] — fill in this exact numbered or
 
 
 CREATE_BILL_FIELDS = """[Form: createBillForm] — fill in this exact numbered order, ONE tool call per turn:
-1.  [type_and_select] "Patient Name"       → #emaPatientQuickSearch
-2.  [fill_ui_select]  "Service Location"   → #placeOfServiceSelect
-3.  [fill_ui_select]  "Primary Biller"     → #renderingProviderSelect
-4.  [fill_field]      "Date of Service"    → input#dateOfServiceInput
-5.  [fill_ui_select]  "Primary Provider"   → #primaryProviderSelect
-6.  [fill_ui_select]  "Referring Provider" → #referringProviderSelect        (OPTIONAL — skip if not in DATA TO FILL)
-7.  [select_option]   "Reportable Reason"  → #reportableReasonSelect         (OPTIONAL — skip if not in DATA TO FILL; leave at default)
-8.  [add_diagnosis]   "Diagnoses"          → call add_diagnosis(text=<value>) for EACH diagnosis entry
-                                             If diagnoses is a comma-separated list, split it and call
-                                             add_diagnosis once per item.
-9.  [done_filling]    — call with NO arguments after ALL diagnoses have been added"""
-
+1.  [type_and_select] "Patient Name"          → #emaPatientQuickSearch
+2.  [fill_ui_select]  "Service Location"      → #placeOfServiceSelect
+3.  [fill_ui_select]  "Primary Biller"        → #renderingProviderSelect
+4.  [fill_field]      "Date of Service"       → input#dateOfServiceInput
+5.  [fill_ui_select]  "Primary Provider"      → #primaryProviderSelect
+6.  [fill_ui_select]  "Referring Provider"    → #referringProviderSelect     (OPTIONAL — skip if not in DATA TO FILL)
+7.  [select_option]   "Reportable Reason"     → #reportableReasonSelect      (OPTIONAL — skip if not in DATA TO FILL; leave at default)
+8.  [select_option]   "Provider Fee Schedule" → #providerFeeScheduleSelect   (OPTIONAL — skip if not in DATA TO FILL; leave at default)
+9.  [select_option]   "Medical Domain"        → #medicalSubdomain            (OPTIONAL — skip if not in DATA TO FILL; leave at default)
+10. [add_diagnosis]   "Diagnoses"             → call add_diagnosis(text=<value>) for EACH diagnosis entry
+                                                If diagnoses is a comma-separated list, split it and call
+                                                add_diagnosis once per item.
+11. [done_filling]    — call with NO arguments after ALL diagnoses have been added"""
+     
 
 SYSTEM_PROMPT = """You are a browser automation agent that fills web forms.
 

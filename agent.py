@@ -11,7 +11,7 @@ from navigation import login, navigate_to_create_bill, get_services_dump, click_
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 1
-_OPTIONAL_BILL_FIELDS = {"referring_provider", "reportable_reason"}
+_OPTIONAL_BILL_FIELDS = {"referring_provider", "reportable_reason", "provider_fee_schedule", "medical_domain"}
 
 _RETRY_MSG = (
     "An error interrupted the previous attempt. "
