@@ -93,9 +93,12 @@ async def select_option(selector: str, value: str) -> str:
         except Exception:
             pass
         try:
-            await page.select_option(selector, value=value, timeout=3000)
+            await page.select_option(selector, value=value, timeout=8000)
         except Exception:
-            await page.select_option(selector, label=value, timeout=3000)
+            try:
+                await page.select_option(selector, label=value, timeout=8000)
+            except Exception:
+                await page.select_option(selector, label=value.title(), timeout=8000)
         await page.wait_for_timeout(200)
         return f"Selected '{value}' in {selector}"
     except Exception as e:
