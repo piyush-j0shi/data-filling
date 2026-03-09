@@ -4,14 +4,13 @@ from collections.abc import Callable
 
 from client import get_bedrock_browser, set_page, save_browser_profile
 from config import FORM_DATA_FILE, AWS_REGION, BROWSER_ID, BROWSER_PROFILE_ID, SCREENSHOT_PATH, validate_config
-from prompts import CREATE_BILL_FIELDS, SERVICES_FIELDS
+from prompts import build_bill_msg, build_services_msg
 from workflow import create_automation_agent, run_phase
 from navigation import login, navigate_to_create_bill, get_services_dump, click_create_bill, save_and_exit
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 1
-_OPTIONAL_BILL_FIELDS = {"referring_provider", "reportable_reason", "provider_fee_schedule", "medical_domain"}
 
 _RETRY_MSG = (
     "An error interrupted the previous attempt. "
@@ -43,30 +42,6 @@ def _normalize_diagnoses(raw) -> list[str]:
                 pass
         return [d.strip() for d in raw.split(",") if d.strip()]
     return []
-
-
-def _build_bill_msg(bill_fields: dict) -> str:
-    fields_str = '\n'.join(f'  - {k}: {v}' for k, v in bill_fields.items())
-    return (
-        "Fill ONLY the fields listed in DATA TO FILL, in the order shown.\n"
-        "For the Diagnoses field, call add_diagnosis() once for EACH item in the list.\n"
-        "Call done_filling() after ALL present fields (including all diagnoses) are complete.\n\n"
-        f"FIELDS REFERENCE:\n{CREATE_BILL_FIELDS}\n\n"
-        f"DATA TO FILL:\n{fields_str}"
-    )
-
-
-def _build_services_msg(phase3_fields: dict, page_dump: str) -> str:
-    fields_str = '\n'.join(f'  - {k}: "{v}"' for k, v in phase3_fields.items())
-    return (
-        "You are on the Services Rendered form.\n\n"
-        f"FIELDS REFERENCE (primary — use these exact tools and selectors):\n{SERVICES_FIELDS}\n\n"
-        f"PAGE ELEMENTS (fallback — use only for fields not listed in FIELDS REFERENCE):\n{page_dump}\n\n"
-        f"DATA TO FILL:\n{fields_str}\n\n"
-        "Fill EVERY field present in DATA TO FILL using the tool and selector from FIELDS REFERENCE.\n"
-        "Match each DATA TO FILL key to its closest entry in FIELDS REFERENCE by name.\n"
-        "Call done_filling() only after ALL fields in DATA TO FILL have been filled."
-    )
 
 
 async def _run_with_retry(
@@ -118,7 +93,7 @@ def _log_summary(results: list[dict]) -> None:
         logger.info("FAILED ENTRIES:")
         for r in failed:
             reason = r.get("reason") or "Unknown"
-            logger.error("  Entry %d: %s", r['entry'], ', '.join(f'{k}="{v}"' for k, v in r["data"].items()))
+            logger.error("  Entry %d: %s", r['entry'], json.dumps(r["data"]))
             logger.error("  Reason: %s%s", reason[:300], "..." if len(reason) > 300 else "")
     logger.info("%s", "=" * 70)
 
@@ -151,22 +126,16 @@ async def run_agent() -> list[dict]:
         total = len(form_data)
         for i, entry in enumerate(form_data, 1):
             logger.info("%s", "─" * 80)
-            logger.info(
-                "BILL ENTRY %d/%d — %s",
-                i, total, ', '.join(f'{k}="{v}"' for k, v in entry.items()),
-            )
+            logger.info("BILL ENTRY %d/%d", i, total)
             logger.info("%s", "─" * 80)
 
-            keys = list(entry.keys())
-            split_idx = keys.index("diagnoses") + 1 if "diagnoses" in keys else len(keys)
-            bill_fields = {
-                k: entry[k] for k in keys[:split_idx]
-                if k != "bill_type" and (k not in _OPTIONAL_BILL_FIELDS or entry[k])
-            }
-            if "diagnoses" in bill_fields:
-                bill_fields["diagnoses"] = json.dumps(_normalize_diagnoses(bill_fields["diagnoses"]))
             bill_type = entry.get("bill_type", "Patient")
-            phase3_fields = {k: entry[k] for k in keys[split_idx:]}
+
+            bill_data = {k: v for k, v in entry.get("bill", {}).items() if v}
+            if "diagnoses" in bill_data:
+                bill_data["diagnoses"] = json.dumps(_normalize_diagnoses(bill_data["diagnoses"]))
+
+            services_data = {k: v for k, v in entry.get("services", {}).items() if v}
 
             navigated, failure = False, ""
             for attempt in range(1 + MAX_RETRIES):
@@ -188,7 +157,7 @@ async def run_agent() -> list[dict]:
 
             _, bill_created, failure = await _run_with_retry(
                 graph,
-                lambda: _build_bill_msg(bill_fields),
+                lambda: build_bill_msg(bill_data),
                 f"Fill Bill Fields (Entry {i})",
                 _any_field_filled,
             )
@@ -204,9 +173,9 @@ async def run_agent() -> list[dict]:
 
             _, success, failure = await _run_with_retry(
                 graph,
-                lambda: _build_services_msg(phase3_fields, page_dump),
+                lambda: build_services_msg(services_data, page_dump),
                 f"Fill Services Rendered (Entry {i})",
-                lambda msgs: not phase3_fields or _any_field_filled(msgs),
+                lambda msgs: not services_data or _any_field_filled(msgs),
             )
 
             if success:
