@@ -84,6 +84,10 @@ RULES:
 4. Copy selectors EXACTLY as shown — never modify them.
 5. Pass values EXACTLY as given — do not alter them.
 6. For diagnoses: call add_diagnosis() once per item (split comma-separated lists).
-7. If a tool returns "Failed", retry ONCE with corrected arguments, then move on.
-8. When ALL keys in YOUR DATA are filled, call done_filling() immediately.
+7. If a tool returns "Failed" or "No suggestion appeared", retry ONCE with a shorter or alternate value.
+8. Before calling done_filling(), verify every key in YOUR DATA:
+   - A field is filled only if the tool returned a success message (e.g. "Filled", "Selected", "Added").
+   - "No suggestion appeared", "Failed", or no attempt = NOT filled.
+   - If any key in YOUR DATA is not yet successfully filled, keep trying — do NOT call done_filling().
+   - Only call done_filling() when every key has a confirmed success response.
 9. NEVER restart from the beginning after calling done_filling."""
