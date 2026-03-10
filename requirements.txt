@@ -11,3 +11,7 @@ mangum>=0.17.0
 python-dotenv>=1.0.0
 langchain-groq>=0.2.0
 python-multipart
+openai>=1.0.0
+pdf2image>=1.16.0
+Pillow>=10.0.0
+numpy>=1.24.0
