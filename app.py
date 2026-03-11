@@ -4,13 +4,20 @@ import logging
 import os
 import re
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
+from urllib.parse import unquote_plus
 
+import boto3
+from botocore.exceptions import ClientError
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from mangum import Mangum
 
 from agent import run_agent
-from config import FORM_DATA_FILE, initialize_model, validate_config
+from config import (
+    FORM_DATA_FILE, initialize_model, validate_config,
+    S3_BUCKET, S3_INPUT_PREFIX, S3_RESULTS_PREFIX,
+)
 from extractor import OpenAIMedicalDocumentExtractor
 
 logging.basicConfig(
@@ -21,7 +28,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 EXECUTION_TIMEOUT = 900
 
 _MAPPING_PROMPT_BASE = """You are given raw extracted data from a medical fee ticket PDF.
@@ -70,29 +77,83 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-handler = Mangum(app, lifespan="auto")
+_mangum = Mangum(app, lifespan="auto")
+
+s3_client = boto3.client("s3")
 
 
-@app.post("/run")
-async def run(file: UploadFile = File(...)):
+@app.post("/upload")
+async def upload(file: UploadFile = File(...)):
     filename = (file.filename or "").lower()
-
-    if filename.endswith(".pdf"):
-        return await _handle_pdf(file)
-    elif filename.endswith(".json"):
-        return await _handle_json(file)
-    else:
+    if not (filename.endswith(".pdf") or filename.endswith(".json")):
         raise HTTPException(status_code=400, detail="Only .pdf or .json files are accepted")
 
-
-async def _handle_pdf(file: UploadFile) -> dict:
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds 10 MB limit")
 
-    logger.info("Received PDF: %s (%d bytes)", file.filename, len(contents))
+    ext = "pdf" if filename.endswith(".pdf") else "json"
+    job_id = uuid.uuid4().hex
+    s3_key = f"{S3_INPUT_PREFIX}/{job_id}.{ext}"
 
-    # Step 1 — Extract
+    s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=contents)
+    logger.info("Job %s queued: s3://%s/%s", job_id, S3_BUCKET, s3_key)
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/status/{job_id}")
+async def status(job_id: str):
+    result_key = f"{S3_RESULTS_PREFIX}/{job_id}.json"
+    try:
+        obj = s3_client.get_object(Bucket=S3_BUCKET, Key=result_key)
+        return json.loads(obj["Body"].read())
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            return {"job_id": job_id, "status": "pending"}
+        logger.error("S3 error checking status for job %s: %s", job_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _process_s3_event(bucket: str, key: str, job_id: str) -> None:
+    validate_config()
+
+    obj = s3_client.get_object(Bucket=bucket, Key=key)
+    contents = obj["Body"].read()
+    ext = key.rsplit(".", 1)[-1].lower()
+
+    try:
+        if ext == "pdf":
+            form_data = await _process_pdf_bytes(contents)
+        elif ext == "json":
+            form_data = _process_json_bytes(contents)
+        else:
+            raise ValueError(f"Unsupported file extension: {ext}")
+
+        FORM_DATA_FILE.write_text(json.dumps(form_data, indent=2))
+        logger.info("Job %s: saved %d entries, starting agent", job_id, len(form_data))
+
+        results = await asyncio.wait_for(run_agent(), timeout=EXECUTION_TIMEOUT)
+        payload = {"job_id": job_id, "status": "success", "results": results}
+
+    except asyncio.TimeoutError:
+        logger.error("Job %s timed out after %ds", job_id, EXECUTION_TIMEOUT)
+        payload = {"job_id": job_id, "status": "failed", "error": f"Timed out after {EXECUTION_TIMEOUT}s"}
+    except Exception as e:
+        logger.error("Job %s failed: %s", job_id, e, exc_info=True)
+        payload = {"job_id": job_id, "status": "failed", "error": str(e)}
+
+    result_key = f"{S3_RESULTS_PREFIX}/{job_id}.json"
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=result_key,
+        Body=json.dumps(payload, indent=2),
+        ContentType="application/json",
+    )
+    logger.info("Job %s: result written to s3://%s/%s", job_id, bucket, result_key)
+
+
+async def _process_pdf_bytes(contents: bytes) -> list:
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -102,26 +163,33 @@ async def _handle_pdf(file: UploadFile) -> dict:
         extractor = OpenAIMedicalDocumentExtractor()
         loop = asyncio.get_event_loop()
         extraction = await loop.run_in_executor(None, extractor.extract_from_pdf, tmp_path)
-    except Exception as e:
-        logger.error("Extraction failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {e}")
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-    logger.info("Extraction complete. Mapping to form fields via LLM...")
+    return await _map_to_form_data(extraction)
 
-    # Step 2 — LLM maps extracted JSON → form_data structure
+
+def _process_json_bytes(contents: bytes) -> list:
     try:
-        form_data = await _map_to_form_data(extraction)
-    except Exception as e:
-        logger.error("LLM mapping failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"LLM mapping failed: {e}")
+        data = json.loads(contents)
+    except json.JSONDecodeError:
+        raise ValueError("Invalid JSON in uploaded file")
 
-    logger.info("Mapped form data: %s", json.dumps(form_data, indent=2))
+    if not isinstance(data, list):
+        raise ValueError("JSON must be a list of bill entry objects")
 
-    # Step 3 — Save and run agent
-    return await _save_and_run(form_data)
+    for entry in data:
+        diagnoses = entry.get("bill", {}).get("diagnoses")
+        if isinstance(diagnoses, list):
+            for dx in diagnoses:
+                dx_str = str(dx).strip()
+                if not (1 < len(dx_str) <= 12):
+                    raise ValueError(
+                        f"Diagnosis '{dx_str}' must be between 2 and 12 characters"
+                    )
+
+    return data
 
 
 async def _map_to_form_data(extraction: dict) -> list:
@@ -135,7 +203,6 @@ async def _map_to_form_data(extraction: dict) -> list:
 
     raw = await loop.run_in_executor(None, _call)
 
-    # Strip markdown code fences if present
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
     raw = re.sub(r"\s*```$", "", raw.strip())
 
@@ -150,50 +217,41 @@ async def _map_to_form_data(extraction: dict) -> list:
     return entries
 
 
-async def _handle_json(file: UploadFile) -> dict:
-    contents = await file.read()
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File exceeds 10 MB limit")
+def handler(event, context):
+    records = event.get("Records", [])
 
-    logger.info("Received JSON: %s (%d bytes)", file.filename, len(contents))
+    if not records or records[0].get("eventSource") != "aws:s3":
+        logger.info("No S3 records in event — routing to FastAPI via Mangum")
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        return _mangum(event, context)
 
-    try:
-        data = json.loads(contents)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON in uploaded file")
+    record = records[0]["s3"]
+    bucket = record["bucket"]["name"]
+    key = unquote_plus(record["object"]["key"])
 
-    if not isinstance(data, list):
-        raise HTTPException(status_code=400, detail="JSON must be a list of bill entry objects")
+    logger.info("S3 trigger: bucket=%s key=%s", bucket, key)
 
-    for entry in data:
-        diagnoses = entry.get("bill", {}).get("diagnoses")
-        if isinstance(diagnoses, list):
-            for dx in diagnoses:
-                dx_str = str(dx).strip()
-                if not (1 < len(dx_str) <= 12):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Diagnosis '{dx_str}' must be between 2 and 12 characters",
-                    )
+    if not key.startswith(f"{S3_INPUT_PREFIX}/"):
+        logger.error(
+            "Loop guard triggered: key '%s' is not under input prefix '%s/' — rejecting. "
+            "Check S3 event notification prefix filter.",
+            key, S3_INPUT_PREFIX,
+        )
+        return {"statusCode": 200, "body": json.dumps({"skipped": "key-not-in-input-prefix"})}
 
-    return await _save_and_run(data)
+    if key.startswith(f"{S3_RESULTS_PREFIX}/"):
+        logger.error(
+            "Loop guard triggered: key '%s' is under results prefix '%s/' — "
+            "result write is re-triggering Lambda. Fix S3 event notification filter immediately.",
+            key, S3_RESULTS_PREFIX,
+        )
+        return {"statusCode": 200, "body": json.dumps({"skipped": "key-in-results-prefix"})}
 
+    job_id = key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    logger.info("S3 event accepted: job_id=%s", job_id)
 
-async def _save_and_run(form_data: list) -> dict:
-    FORM_DATA_FILE.write_text(json.dumps(form_data, indent=2))
-    logger.info("Saved form data (%d entries), starting agent", len(form_data))
-
-    try:
-        results = await asyncio.wait_for(run_agent(), timeout=EXECUTION_TIMEOUT)
-    except asyncio.TimeoutError:
-        logger.error("Execution timed out after %ds", EXECUTION_TIMEOUT)
-        raise HTTPException(status_code=504, detail="Execution timed out")
-    except Exception as e:
-        logger.error("Execution failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-    logger.info("Execution completed — %d entries processed", len(results or []))
-    return {"status": "success", "results": results}
+    asyncio.run(_process_s3_event(bucket, key, job_id))
+    return {"statusCode": 200, "body": json.dumps({"job_id": job_id})}
 
 
 if __name__ == "__main__":

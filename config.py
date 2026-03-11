@@ -21,6 +21,10 @@ BROWSER_ID = os.environ.get("BROWSER_ID", "your-bedrock-browser-id")
 BROWSER_PROFILE_ID = os.environ.get("BROWSER_PROFILE_ID", "")
 MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "groq")
 
+S3_BUCKET = os.environ.get("S3_BUCKET", "")
+S3_INPUT_PREFIX = "jobs/input"    
+S3_RESULTS_PREFIX = "jobs/results"  
+
 
 def validate_config() -> None:
     """Raise ValueError if any required environment variable is missing or unset."""
@@ -28,6 +32,8 @@ def validate_config() -> None:
         raise ValueError("APP_URL is not configured. Set the APP_URL environment variable.")
     if "your-bedrock-browser-id" in BROWSER_ID:
         raise ValueError("BROWSER_ID is not configured. Set the BROWSER_ID environment variable.")
+    if not S3_BUCKET:
+        raise ValueError("S3_BUCKET is not configured. Set the S3_BUCKET environment variable.")
     if MODEL_PROVIDER == "groq" and not os.environ.get("GROQ_API_KEY"):
         raise ValueError("GROQ_API_KEY is not configured. Set the GROQ_API_KEY environment variable.")
     if MODEL_PROVIDER == "openai" and not os.environ.get("OPENAI_API_KEY"):
