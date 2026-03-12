@@ -16,7 +16,7 @@ from mangum import Mangum
 from agent import run_agent
 from config import (
     FORM_DATA_FILE, initialize_model, validate_config,
-    S3_BUCKET, S3_INPUT_PREFIX, S3_RESULTS_PREFIX,
+    S3_INPUT_BUCKET, S3_RESULTS_BUCKET,
 )
 from extractor import OpenAIMedicalDocumentExtractor
 
@@ -85,28 +85,27 @@ s3_client = boto3.client("s3")
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     filename = (file.filename or "").lower()
-    if not (filename.endswith(".pdf") or filename.endswith(".json")):
-        raise HTTPException(status_code=400, detail="Only .pdf or .json files are accepted")
+    if not filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only .pdf files are accepted")
 
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds 10 MB limit")
 
-    ext = "pdf" if filename.endswith(".pdf") else "json"
     job_id = uuid.uuid4().hex
-    s3_key = f"{S3_INPUT_PREFIX}/{job_id}.{ext}"
+    s3_key = f"{job_id}.pdf"
 
-    s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=contents)
-    logger.info("Job %s queued: s3://%s/%s", job_id, S3_BUCKET, s3_key)
+    s3_client.put_object(Bucket=S3_INPUT_BUCKET, Key=s3_key, Body=contents)
+    logger.info("Job %s queued: s3://%s/%s", job_id, S3_INPUT_BUCKET, s3_key)
 
     return {"job_id": job_id, "status": "queued"}
 
 
 @app.get("/status/{job_id}")
 async def status(job_id: str):
-    result_key = f"{S3_RESULTS_PREFIX}/{job_id}.json"
+    result_key = f"{job_id}.json"
     try:
-        obj = s3_client.get_object(Bucket=S3_BUCKET, Key=result_key)
+        obj = s3_client.get_object(Bucket=S3_RESULTS_BUCKET, Key=result_key)
         return json.loads(obj["Body"].read())
     except ClientError as e:
         if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
@@ -120,15 +119,9 @@ async def _process_s3_event(bucket: str, key: str, job_id: str) -> None:
 
     obj = s3_client.get_object(Bucket=bucket, Key=key)
     contents = obj["Body"].read()
-    ext = key.rsplit(".", 1)[-1].lower()
 
     try:
-        if ext == "pdf":
-            form_data = await _process_pdf_bytes(contents)
-        elif ext == "json":
-            form_data = _process_json_bytes(contents)
-        else:
-            raise ValueError(f"Unsupported file extension: {ext}")
+        form_data = await _process_pdf_bytes(contents)
 
         FORM_DATA_FILE.write_text(json.dumps(form_data, indent=2))
         logger.info("Job %s: saved %d entries, starting agent", job_id, len(form_data))
@@ -143,14 +136,14 @@ async def _process_s3_event(bucket: str, key: str, job_id: str) -> None:
         logger.error("Job %s failed: %s", job_id, e, exc_info=True)
         payload = {"job_id": job_id, "status": "failed", "error": str(e)}
 
-    result_key = f"{S3_RESULTS_PREFIX}/{job_id}.json"
+    result_key = f"{job_id}.json"
     s3_client.put_object(
-        Bucket=bucket,
+        Bucket=S3_RESULTS_BUCKET,
         Key=result_key,
         Body=json.dumps(payload, indent=2),
         ContentType="application/json",
     )
-    logger.info("Job %s: result written to s3://%s/%s", job_id, bucket, result_key)
+    logger.info("Job %s: result written to s3://%s/%s", job_id, S3_RESULTS_BUCKET, result_key)
 
 
 async def _process_pdf_bytes(contents: bytes) -> list:
@@ -169,27 +162,6 @@ async def _process_pdf_bytes(contents: bytes) -> list:
 
     return await _map_to_form_data(extraction)
 
-
-def _process_json_bytes(contents: bytes) -> list:
-    try:
-        data = json.loads(contents)
-    except json.JSONDecodeError:
-        raise ValueError("Invalid JSON in uploaded file")
-
-    if not isinstance(data, list):
-        raise ValueError("JSON must be a list of bill entry objects")
-
-    for entry in data:
-        diagnoses = entry.get("bill", {}).get("diagnoses")
-        if isinstance(diagnoses, list):
-            for dx in diagnoses:
-                dx_str = str(dx).strip()
-                if not (1 < len(dx_str) <= 12):
-                    raise ValueError(
-                        f"Diagnosis '{dx_str}' must be between 2 and 12 characters"
-                    )
-
-    return data
 
 
 async def _map_to_form_data(extraction: dict) -> list:
@@ -231,23 +203,7 @@ def handler(event, context):
 
     logger.info("S3 trigger: bucket=%s key=%s", bucket, key)
 
-    if not key.startswith(f"{S3_INPUT_PREFIX}/"):
-        logger.error(
-            "Loop guard triggered: key '%s' is not under input prefix '%s/' — rejecting. "
-            "Check S3 event notification prefix filter.",
-            key, S3_INPUT_PREFIX,
-        )
-        return {"statusCode": 200, "body": json.dumps({"skipped": "key-not-in-input-prefix"})}
-
-    if key.startswith(f"{S3_RESULTS_PREFIX}/"):
-        logger.error(
-            "Loop guard triggered: key '%s' is under results prefix '%s/' — "
-            "result write is re-triggering Lambda. Fix S3 event notification filter immediately.",
-            key, S3_RESULTS_PREFIX,
-        )
-        return {"statusCode": 200, "body": json.dumps({"skipped": "key-in-results-prefix"})}
-
-    job_id = key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    job_id = key.rsplit(".", 1)[0]
     logger.info("S3 event accepted: job_id=%s", job_id)
 
     asyncio.run(_process_s3_event(bucket, key, job_id))
