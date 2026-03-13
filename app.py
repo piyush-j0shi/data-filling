@@ -125,6 +125,7 @@ async def _process_s3_event(bucket: str, key: str, job_id: str) -> None:
 
         FORM_DATA_FILE.write_text(json.dumps(form_data, indent=2))
         logger.info("Job %s: saved %d entries, starting agent", job_id, len(form_data))
+        logger.info("Job %s: extracted form_data = %s", job_id, json.dumps(form_data, indent=2))
 
         results = await asyncio.wait_for(run_agent(), timeout=EXECUTION_TIMEOUT)
         payload = {"job_id": job_id, "status": "success", "results": results}
